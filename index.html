@@ -1,0 +1,2246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tailgate AI Inspection and Traceability</title>
+    <!-- Modern Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-card: #f1f5f9;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --accent-blue: #2563eb;
+            --accent-blue-light: rgba(37, 99, 235, 0.1);
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --dark-border: #e2e8f0;
+            
+            --font-display: 'Outfit', sans-serif;
+            --font-body: 'Plus Jakarta Sans', sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            font-family: var(--font-body);
+            font-size: 13px;
+            line-height: 1.4;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            padding: 10px;
+            gap: 10px;
+        }
+
+        /* Header Styles */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-secondary);
+            padding: 8px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--dark-border);
+            flex-shrink: 0;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, var(--accent-blue) 0%, #1d4ed8 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+        }
+
+        .logo-icon svg {
+            width: 20px;
+            height: 20px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2.2;
+        }
+
+        .logo-text h1 {
+            font-family: var(--font-display);
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-main);
+            letter-spacing: -0.01em;
+        }
+
+        .logo-text span {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            display: block;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .config-toggle-btn {
+            background: var(--bg-card);
+            border: 1px solid var(--dark-border);
+            color: var(--text-main);
+            padding: 8px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: var(--font-body);
+            font-weight: 600;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        .config-toggle-btn:hover {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: white;
+        }
+
+        .connect-both-btn {
+            background: #10b981;
+            border-color: #059669;
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .connect-both-btn:hover {
+            background: #059669;
+            border-color: #047857;
+            color: #ffffff;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .spin-icon {
+            animation: spin 1s linear infinite;
+        }
+
+        .clock-badge {
+            background: var(--bg-card);
+            color: var(--accent-blue);
+            font-family: monospace;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 6px 12px;
+            border-radius: 6px;
+            letter-spacing: 1px;
+            border: 1px solid var(--dark-border);
+        }
+
+        /* Main Workspace Layout */
+        .workspace {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 16px;
+            flex-grow: 1;
+            min-height: 0; /* Important for preventing grid overflow */
+            position: relative;
+        }
+
+        /* Left Side: Live Feed & Config Menu */
+        .feed-container {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        /* Futuristic Live View */
+        .live-view {
+            background-color: var(--bg-card);
+            border-radius: 12px;
+            flex-grow: 1;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--dark-border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 0;
+        }
+
+        /* Tech HUD Corners */
+        .live-view::before, .live-view::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #38bdf8;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .live-view::before {
+            top: 12px;
+            left: 12px;
+            border-right: 0;
+            border-bottom: 0;
+        }
+        .live-view::after {
+            bottom: 12px;
+            right: 12px;
+            border-left: 0;
+            border-top: 0;
+        }
+
+        /* HUD top/bottom bars */
+        .hud-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 16px;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .hud-top, .hud-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .hud-badge {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(4px);
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid var(--dark-border);
+            color: var(--text-main);
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .badge-live {
+            color: #ef4444;
+            font-weight: 700;
+        }
+
+        .badge-live::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            background-color: #ef4444;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 1.5s infinite;
+        }
+
+        .hud-bottom {
+            color: var(--text-muted);
+            font-size: 10px;
+            font-family: monospace;
+        }
+
+        .no-signal-msg {
+            color: var(--text-muted);
+            font-family: var(--font-display);
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .no-signal-msg svg {
+            width: 48px;
+            height: 48px;
+            stroke-width: 1.5;
+            color: #334155;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .sidebar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb {
+            background: var(--dark-border);
+            border-radius: 3px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-blue);
+        }
+
+        .sidebar-section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            border: 1px solid var(--dark-border);
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .section-title {
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--dark-border);
+            padding-bottom: 6px;
+        }
+
+        /* Live Inspection status */
+        .inspection-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-main h2 {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        .cycle-badge {
+            font-family: monospace;
+            font-size: 10px;
+            font-weight: bold;
+            color: var(--text-muted);
+            background: var(--bg-card);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        /* Capture sequence */
+        .sequence-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .sequence-step {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+        }
+
+        .step-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .step-num {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--bg-card);
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .step-status {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        /* Step states */
+        .step-done .step-num {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+        }
+        .step-done .step-label { color: var(--text-main); }
+        .step-done .step-status { color: var(--accent-green); }
+
+        .step-active .step-num {
+            background: rgba(59, 130, 246, 0.1);
+            color: var(--accent-blue);
+        }
+        .step-active .step-label { color: var(--text-main); }
+        .step-active .step-status { color: var(--accent-blue); }
+
+        /* Traceability serial */
+        .trace-content {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .trace-value {
+            font-family: monospace;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            color: var(--text-main);
+            transition: color 0.4s ease, text-shadow 0.4s ease;
+        }
+
+        .trace-value.finalized {
+            color: #10b981;
+            text-shadow: 0 0 8px rgba(16, 185, 129, 0.4), 0 0 20px rgba(16, 185, 129, 0.15);
+        }
+
+        @keyframes serial-lock {
+            0% { transform: scale(1); }
+            30% { transform: scale(1.06); }
+            100% { transform: scale(1); }
+        }
+
+        .trace-value.finalized.just-locked {
+            animation: serial-lock 0.5s ease;
+        }
+
+        .trace-sub {
+            font-size: 10.5px;
+            color: var(--text-muted);
+        }
+
+        /* Split Serial Display (Date, Model, Time) */
+        .trace-split-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            width: 100%;
+        }
+
+        .trace-split-card {
+            background: var(--bg-card);
+            border: 1px solid var(--dark-border);
+            border-radius: 8px;
+            padding: 8px 6px;
+            text-align: center;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+            transition: all 0.3s ease;
+        }
+
+        .trace-split-card .card-label {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .trace-part-value {
+            font-family: monospace;
+            font-size: 17px;
+            font-weight: 800;
+            color: var(--text-main);
+            letter-spacing: 1px;
+            transition: color 0.4s ease, text-shadow 0.4s ease;
+        }
+
+        .trace-split-card.finalized {
+            border-color: #10b981 !important;
+            background: rgba(16, 185, 129, 0.08) !important;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.15) !important;
+        }
+
+        .trace-split-card.finalized .trace-part-value {
+            color: #10b981 !important;
+            text-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+        }
+
+        /* Inspection Result */
+        .result-panel {
+            background: rgba(0, 0, 0, 0.02);
+            border: 1px dashed var(--dark-border);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        /* Sliding Config Sidebar (Camera Config) */
+        .config-sidebar {
+            position: absolute;
+            top: 0;
+            right: -320px;
+            width: 300px;
+            height: 100%;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--dark-border);
+            box-shadow: -10px 0 25px rgba(0, 0, 0, 0.1);
+            z-index: 100;
+            transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+            border-radius: 12px 0 0 12px;
+        }
+
+        .config-sidebar.active {
+            right: 0;
+        }
+
+        .config-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--dark-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .config-header h3 {
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+
+        .config-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Tab Buttons inside Config */
+        .config-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--dark-border);
+            margin-bottom: 4px;
+        }
+
+        .config-tab-btn {
+            flex: 1;
+            padding: 10px;
+            background: none;
+            border: none;
+            font-family: var(--font-body);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 2px solid transparent;
+        }
+
+        .config-tab-btn.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+            background: var(--accent-blue-light);
+        }
+
+        .config-tab-panels {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .config-panel {
+            display: none;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .config-panel.active {
+            display: flex;
+        }
+
+        /* Form Inputs */
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 100px;
+            gap: 10px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-group label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .input-text {
+            width: 100%;
+            padding: 8px 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--dark-border);
+            border-radius: 6px;
+            color: var(--text-main);
+            font-family: var(--font-body);
+            font-size: 12px;
+            transition: border-color 0.2s;
+        }
+
+        .input-text:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .upload-area {
+            border: 2px dashed var(--dark-border);
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: var(--bg-primary);
+        }
+
+        .upload-area:hover {
+            border-color: var(--accent-blue);
+            background-color: var(--accent-blue-light);
+        }
+
+        .upload-area svg {
+            width: 28px;
+            height: 28px;
+            color: var(--text-muted);
+        }
+
+        .btn-submit {
+            background: var(--accent-blue);
+            color: white;
+            border: none;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-family: var(--font-body);
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            text-align: center;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .btn-submit:hover {
+            opacity: 0.9;
+        }
+
+        /* Keyframe Animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.15); }
+        }
+
+        @keyframes progress-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* ── Zone Detection ────────────────────────────── */
+        .zones-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .zone-card {
+            border: 2px solid var(--dark-border);
+            border-radius: 10px;
+            padding: 10px 9px 9px;
+            background: var(--bg-primary);
+            transition: border-color 0.3s, background 0.3s, box-shadow 0.3s;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .zone-card.detecting {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.06);
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+        }
+
+        .zone-card.error {
+            border-color: var(--accent-red);
+            background: rgba(239, 68, 68, 0.06);
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+        }
+
+        .zone-icon-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .zone-rect {
+            width: 32px;
+            height: 20px;
+            border-radius: 4px;
+            border: 2px solid var(--dark-border);
+            background: transparent;
+            transition: all 0.3s;
+            flex-shrink: 0;
+        }
+
+        .zone-card.detecting .zone-rect {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.25);
+        }
+
+        .zone-card.error .zone-rect {
+            border-color: var(--accent-red);
+            background: rgba(239, 68, 68, 0.25);
+        }
+
+        .zone-status-badge {
+            font-size: 8px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 2px 5px;
+            border-radius: 4px;
+            background: var(--bg-card);
+            color: var(--text-muted);
+            transition: all 0.3s;
+        }
+
+        .zone-card.detecting .zone-status-badge {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            animation: progress-pulse 1.4s infinite;
+        }
+
+        .zone-card.error .zone-status-badge {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--accent-red);
+        }
+
+        .zone-name {
+            font-size: 10.5px;
+            font-weight: 700;
+            color: var(--text-main);
+            line-height: 1.2;
+        }
+
+        .zone-progress-track {
+            width: 100%;
+            height: 5px;
+            background: var(--bg-card);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .zone-progress-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 3px;
+            background: var(--accent-green);
+            transition: width 0.4s ease, background 0.3s;
+        }
+
+        .zone-card.detecting .zone-progress-fill {
+            background: var(--accent-green);
+        }
+
+        .zone-card.error .zone-progress-fill {
+            background: var(--accent-red);
+        }
+
+        /* Cycle banner strip */
+        .cycle-strip {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-card);
+            border-radius: 6px;
+            padding: 6px 10px;
+        }
+
+        .cycle-strip-label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .cycle-strip-value {
+            font-family: monospace;
+            font-size: 12px;
+            font-weight: 800;
+            color: var(--accent-blue);
+        }
+
+        /* ── Zone done state ────────────────────────────── */
+        .zone-card.done {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.05);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.12);
+        }
+        .zone-card.done .zone-rect {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.35);
+        }
+        .zone-card.done .zone-status-badge {
+            background: rgba(16, 185, 129, 0.13);
+            color: var(--accent-green);
+        }
+        .zone-card.done .zone-progress-fill {
+            background: var(--accent-green);
+        }
+
+        /* ── Zone adjusting / capturing / ready_to_inspect state (amber) ─────────── */
+        .zone-card.adjusting, .zone-card.capturing, .zone-card.ready_to_inspect {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.06);
+            box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12);
+        }
+        .zone-card.adjusting .zone-rect, .zone-card.capturing .zone-rect, .zone-card.ready_to_inspect .zone-rect {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.3);
+        }
+        .zone-card.adjusting .zone-status-badge, .zone-card.capturing .zone-status-badge, .zone-card.ready_to_inspect .zone-status-badge {
+            background: rgba(245, 158, 11, 0.15);
+            color: #d97706;
+            animation: progress-pulse 0.8s infinite;
+        }
+        .zone-card.adjusting .zone-progress-fill, .zone-card.capturing .zone-progress-fill, .zone-card.ready_to_inspect .zone-progress-fill {
+            background: #f59e0b;
+        }
+
+        /* ── Operator Instruction Banner ─────────────────── */
+        .instruction-banner {
+            border-radius: 8px;
+            padding: 10px 12px;
+            text-align: center;
+            font-family: var(--font-display);
+            font-size: 12px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border: 1.5px solid var(--dark-border);
+            background: var(--bg-card);
+            color: var(--text-muted);
+            transition: all 0.35s;
+            line-height: 1.4;
+        }
+        .instruction-banner.blue {
+            border-color: var(--accent-blue);
+            background: rgba(37, 99, 235, 0.08);
+            color: var(--accent-blue);
+        }
+        .instruction-banner.orange {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.1);
+            color: #d97706;
+            animation: progress-pulse 1s infinite;
+        }
+        .instruction-banner.red {
+            border-color: var(--accent-red);
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--accent-red);
+            animation: progress-pulse 0.7s infinite;
+        }
+        .instruction-banner.green {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+        }
+
+        /* ── Cycle Summary stats ──────────────────────────── */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 6px;
+        }
+
+        .stat-box {
+            background: var(--bg-card);
+            border: 1px solid var(--dark-border);
+            border-radius: 8px;
+            padding: 8px 6px 7px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-family: var(--font-display);
+            font-size: 22px;
+            font-weight: 800;
+            color: var(--text-main);
+            line-height: 1;
+        }
+
+        .stat-label {
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .stat-box.pass .stat-value { color: var(--accent-green); }
+        .stat-box.fail .stat-value { color: var(--accent-red); }
+
+        /* ── Cycle result banner ─────────────────────────── */
+        .cycle-result-banner {
+            border-radius: 8px;
+            padding: 11px 10px;
+            text-align: center;
+            font-family: var(--font-display);
+            font-size: 14px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border: 1.5px solid var(--dark-border);
+            background: var(--bg-card);
+            color: var(--text-muted);
+            transition: all 0.35s;
+        }
+
+        .cycle-result-banner.running {
+            border-color: var(--accent-blue);
+            background: rgba(37, 99, 235, 0.08);
+            color: var(--accent-blue);
+            animation: progress-pulse 1.3s infinite;
+        }
+        .cycle-result-banner.pass {
+            border-color: var(--accent-green);
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+        }
+        .cycle-result-banner.fail {
+            border-color: var(--accent-red);
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--accent-red);
+        }
+        /* ── Zone Alert (floating notification) ──────────────── */
+        @keyframes alert-shake {
+            0%, 100% { transform: translateX(0); }
+            20%  { transform: translateX(-8px); }
+            40%  { transform: translateX( 8px); }
+            60%  { transform: translateX(-5px); }
+            80%  { transform: translateX( 5px); }
+        }
+        @keyframes alert-slide-in {
+            from { opacity: 0; transform: translateY(20px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .zone-alert {
+            position: fixed;
+            bottom: 72px;
+            left: 20px;
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            color: #fff;
+            border-radius: 12px;
+            padding: 14px 16px;
+            width: 272px;
+            z-index: 999;
+            box-shadow: 0 8px 32px rgba(220, 38, 38, 0.5);
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+            border: 1px solid rgba(255,255,255,0.18);
+            animation: alert-slide-in 0.35s ease;
+        }
+        .zone-alert.active {
+            display: flex;
+        }
+        .zone-alert.shaking {
+            animation: alert-shake 0.5s ease, alert-slide-in 0.35s ease;
+        }
+        .zone-alert-title {
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .zone-alert-zones {
+            font-size: 11px;
+            opacity: 0.92;
+            margin-top: 2px;
+            font-weight: 600;
+        }
+        .zone-alert-hint {
+            font-size: 10px;
+            opacity: 0.78;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 8px;
+            line-height: 1.4;
+        }
+        .zone-alert-retry {
+            font-size: 10px;
+            font-weight: 700;
+            background: rgba(255,255,255,0.18);
+            border-radius: 6px;
+            padding: 5px 8px;
+            text-align: center;
+            letter-spacing: 0.04em;
+            display: none;
+        }
+        .zone-alert-retry.visible {
+            display: block;
+        }
+
+        /* ── Massive Video Instruction Banner ── */
+        .video-instruction-banner {
+            position: absolute;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            padding: 16px 48px;
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-align: center;
+            border-radius: 8px;
+            text-transform: uppercase;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+        .video-instruction-banner.orange {
+            background: rgba(245, 158, 11, 0.85);
+            color: #fff;
+            border: 2px solid #fcd34d;
+            animation: pulse-orange 1.5s infinite;
+        }
+        .video-instruction-banner.red {
+            background: rgba(239, 68, 68, 0.9);
+            color: #fff;
+            border: 2px solid #fca5a5;
+            /* Shaking animation is already defined as 'shake' globally */
+            animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+        }
+        .video-instruction-banner.blue {
+            background: rgba(37, 99, 235, 0.85);
+            color: #fff;
+            border: 2px solid #93c5fd;
+            animation: pulse-blue 2s infinite;
+        }
+        .video-instruction-banner.green {
+            background: rgba(16, 185, 129, 0.85);
+            color: #fff;
+            border: 2px solid #6ee7b7;
+        }
+        @keyframes pulse-orange {
+            0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(245, 158, 11, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+        }
+        @keyframes pulse-blue {
+            0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(37, 99, 235, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header>
+        <div class="header-left">
+            <div class="logo-icon" style="background: none; box-shadow: none; border-radius: 0; width: auto; height: 32px; display: flex; align-items: center; justify-content: center;">
+                <img src="sungwoo_logo.webp" alt="Sungwoo Logo" style="height: 100%; max-width: 100%; object-fit: contain;">
+            </div>
+            <div class="logo-text">
+                <h1>Tailgate AI Inspection and Traceability</h1>
+            </div>
+        </div>
+        <div class="header-right">
+            <button class="config-toggle-btn connect-both-btn" id="header-connect-both-btn" onclick="connectBothCamerasAuto()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"></path>
+                </svg>
+                Connect Both Cameras
+            </button>
+            <button class="config-toggle-btn" onclick="toggleConfigSidebar()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.43l-1.003.828c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.43l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.991l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+                </svg>
+                Camera Config
+            </button>
+            <div class="clock-badge" id="digital-clock">09:27:16</div>
+        </div>
+    </header>
+
+    <!-- Workspace -->
+    <div class="workspace">
+        
+        <!-- Left Side: Live Feed -->
+        <div class="feed-container">
+            <div class="live-view" style="display: flex; flex-direction: row; align-items: stretch; justify-content: flex-start;">
+                
+                <!-- Left Half: CP Plus Stream (Takes 2/3 of space) -->
+                <div style="flex: 2.2; position: relative; border-right: 1px solid var(--dark-border); display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0b0f19;">
+                    <div class="hud-overlay" style="position: absolute; inset: 0; pointer-events: none; z-index: 5; display: flex; flex-direction: column; justify-content: space-between; padding: 14px;">
+                        <div class="hud-top" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                            <div class="hud-badge" style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700;">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981; display: inline-block;"></span>
+                                CP PLUS &bull; 1920&times;1080 (1080p)
+                            </div>
+                            <div class="hud-badge" style="font-family: monospace; font-size: 11px; color: #0284c7; background: rgba(255,255,255,0.9);">
+                                LOW LATENCY &bull; 30 FPS
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Massive Video Overlay Banner -->
+                    <div id="video-instruction-banner" class="video-instruction-banner" style="display: none;">
+                        WAITING FOR PART
+                    </div>
+
+                    <img id="video-stream-cp" src="/video_feed_cp" style="width: 100%; height: 100%; object-fit: contain; aspect-ratio: 16 / 9; max-width: 100%; max-height: 100%; position: relative; z-index: 1; transform: translateZ(0); will-change: contents; backface-visibility: hidden;" onerror="this.style.display='none'; document.getElementById('no-signal-msg-cp').style.display='flex';" onload="this.style.display='block'; document.getElementById('no-signal-msg-cp').style.display='none';" alt="CP Plus Camera Feed">
+                    
+                    <div class="no-signal-msg" id="no-signal-msg-cp" style="position: absolute; z-index: 2; display: none; display: flex; flex-direction: column; align-items: center;">
+                        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"/>
+                        </svg>
+                        <span>CP Plus Stream Standby</span>
+                    </div>
+                </div>
+
+                <!-- Right Half: Column (Takes 1/3 of space) -->
+                <div style="flex: 1; display: flex; flex-direction: column; background-color: var(--bg-primary);">
+                    
+                    <!-- Top: Industrial Camera Stream -->
+                    <div style="flex: 1.5; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; background-color: var(--bg-card); border-bottom: 1px solid var(--dark-border);">
+                        <div style="position: absolute; top: 10px; left: 10px; z-index: 6; pointer-events: none;">
+                            <div class="hud-badge">INDUSTRIAL CAM</div>
+                        </div>
+                        <img id="video-stream" src="/industrial_feed" style="width: 100%; height: 100%; object-fit: contain; position: relative; z-index: 11;" onerror="this.style.opacity='0';" onload="this.style.opacity='1';">
+                    </div>
+
+                    <!-- Bottom: Traceability Serial (Date, Model, Time Split) -->
+                    <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 14px 18px;">
+                        <div class="sidebar-section" style="width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: space-between; margin: 0; border: none; background: transparent; box-shadow: none;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <div class="section-title" style="font-size: 13px; font-weight: 700; border-bottom: none; margin: 0; text-transform: uppercase; letter-spacing: 0.5px;">Traceability OCR</div>
+                            </div>
+
+                            <!-- 3 Split Cards: DATE | MODEL | TIME -->
+                            <div class="trace-split-grid">
+                                <!-- Date Card -->
+                                <div class="trace-split-card" id="trace-card-date">
+                                    <div class="card-label">DATE</div>
+                                    <div class="trace-part-value" id="trace-date-val">------</div>
+                                </div>
+
+                                <!-- Model Card -->
+                                <div class="trace-split-card" id="trace-card-model">
+                                    <div class="card-label">MODEL</div>
+                                    <div class="trace-part-value" id="trace-model-val">----</div>
+                                </div>
+
+                                <!-- Time Card -->
+                                <div class="trace-split-card" id="trace-card-time">
+                                    <div class="card-label">TIME</div>
+                                    <div class="trace-part-value" id="trace-time-val">--:--</div>
+                                </div>
+                            </div>
+
+                            <!-- Full Serial Bar Below -->
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0, 0, 0, 0.03); border: 1px dashed var(--dark-border); border-radius: 6px; padding: 6px 12px; margin-top: 8px;">
+                                <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase;">Full Serial:</span>
+                                <span class="trace-value" id="trace-value" style="font-size: 15px; font-weight: 700; letter-spacing: 1.5px;">_________</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Right Side: Sidebar HUD panels -->
+        <div class="sidebar">
+
+
+            <!-- Live Inspection Zone Detection -->
+            <div class="sidebar-section">
+                <div class="section-title">Zone Detection</div>
+
+                <!-- Cycle strip -->
+                <div class="cycle-strip">
+                    <span class="cycle-strip-label" id="inspect-status">Awaiting Camera</span>
+                    <span class="cycle-strip-value" id="cycle-badge">CYCLE #001</span>
+                </div>
+
+                <!-- 4 Zone Cards -->
+                <div class="zones-grid">
+
+                    <!-- Inner Zone 1 -->
+                    <div class="zone-card" id="zone-inner1">
+                        <div class="zone-icon-row">
+                            <div class="zone-rect" id="zone-inner1-rect"></div>
+                            <span class="zone-status-badge" id="zone-inner1-badge">IDLE</span>
+                        </div>
+                        <div class="zone-name">Inner Zone 1</div>
+                        <div class="zone-progress-track">
+                            <div class="zone-progress-fill" id="zone-inner1-fill"></div>
+                        </div>
+                    </div>
+
+                    <!-- Inner Zone 2 -->
+                    <div class="zone-card" id="zone-inner2">
+                        <div class="zone-icon-row">
+                            <div class="zone-rect" id="zone-inner2-rect"></div>
+                            <span class="zone-status-badge" id="zone-inner2-badge">IDLE</span>
+                        </div>
+                        <div class="zone-name">Inner Zone 2</div>
+                        <div class="zone-progress-track">
+                            <div class="zone-progress-fill" id="zone-inner2-fill"></div>
+                        </div>
+                    </div>
+
+                    <!-- Outer Zone 1 -->
+                    <div class="zone-card" id="zone-outer1">
+                        <div class="zone-icon-row">
+                            <div class="zone-rect" id="zone-outer1-rect"></div>
+                            <span class="zone-status-badge" id="zone-outer1-badge">IDLE</span>
+                        </div>
+                        <div class="zone-name">Outer Zone 1</div>
+                        <div class="zone-progress-track">
+                            <div class="zone-progress-fill" id="zone-outer1-fill"></div>
+                        </div>
+                    </div>
+
+                    <!-- Outer Zone 2 -->
+                    <div class="zone-card" id="zone-outer2">
+                        <div class="zone-icon-row">
+                            <div class="zone-rect" id="zone-outer2-rect"></div>
+                            <span class="zone-status-badge" id="zone-outer2-badge">IDLE</span>
+                        </div>
+                        <div class="zone-name">Outer Zone 2</div>
+                        <div class="zone-progress-track">
+                            <div class="zone-progress-fill" id="zone-outer2-fill"></div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Operator Instruction Banner -->
+                <div class="instruction-banner" id="instruction-banner">WAITING FOR PART</div>
+            </div>
+
+
+
+        </div>
+
+        <!-- Side Collapsible Panel (Camera Config) -->
+        <div class="config-sidebar" id="config-sidebar">
+            <div class="config-header">
+                <h3>
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--accent-blue)">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/>
+                    </svg>
+                    Camera Configuration
+                </h3>
+                <button class="close-btn" onclick="toggleConfigSidebar()">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="config-body">
+                <!-- Config Tabs -->
+                <div class="config-tabs">
+                    <button class="config-tab-btn active" onclick="switchConfigTab(event, 'gige-config-panel')">GigE Camera</button>
+                    <button class="config-tab-btn" onclick="switchConfigTab(event, 'cp-plus-config-panel')">CP Plus</button>
+                    <button class="config-tab-btn" onclick="switchConfigTab(event, 'upload-config-panel')">Offline Video</button>
+                </div>
+
+                <div style="margin-bottom: 16px;">
+                    <button class="btn-submit" id="sidebar-connect-both-btn" style="background: #10b981; margin: 0; width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px;" onclick="connectBothCamerasAuto()">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"></path></svg>
+                        Connect Both Cameras
+                    </button>
+                </div>
+
+                <div class="config-tab-panels">
+                    <!-- GigE Config Panel -->
+                    <div class="config-panel active" id="gige-config-panel">
+
+                        <!-- Camera Status Card -->
+                        <div id="gige-status-card" style="background: #f0f7ff; border: 1px solid #b3d4f7; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <span style="font-weight: 700; font-size: 12px; color: #1a3a5c;">Camera</span>
+                                <span style="font-weight: 600; font-size: 11px; color: #1a3a5c;" id="gige-model-name">UA5MEAGV-50M</span>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                                <div>
+                                    <div style="font-size: 10px; color: #666;">Status</div>
+                                    <div id="gige-conn-status" style="font-size: 11px; font-weight: 700; color: #dc2626;">Disconnected</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 10px; color: #666;">FPS</div>
+                                    <div id="gige-fps" style="font-size: 11px; font-weight: 700; color: #1a3a5c;">—</div>
+                                </div>
+                                <div style="grid-column: 1/-1;">
+                                    <div style="font-size: 10px; color: #666;">Resolution</div>
+                                    <div id="gige-resolution" style="font-size: 11px; font-weight: 700; color: #1a3a5c;">—</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Scan + Camera select row -->
+                        <div style="display: flex; gap: 6px; margin-bottom: 10px; align-items: flex-end;">
+                            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                <label for="gige-camera-select">Discovered Camera</label>
+                                <select id="gige-camera-select" class="input-text" style="width: 100%;" onchange="onGigeCameraSelected()">
+                                    <option value="">— scan to discover —</option>
+                                </select>
+                            </div>
+                            <button class="btn-submit" style="flex-shrink:0; padding: 8px 12px; font-size: 11px; margin-bottom: 0;" onclick="scanCameras()">🔍 Scan</button>
+                        </div>
+
+                        <!-- IP + Serial row -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="gige-ip">Camera IP</label>
+                                <input type="text" id="gige-ip" class="input-text" placeholder="169.254.74.100" value="169.254.74.100">
+                            </div>
+                            <div class="form-group">
+                                <label for="gige-serial">Serial Number</label>
+                                <input type="text" id="gige-serial" class="input-text" placeholder="737EV002" value="737EV002">
+                            </div>
+                        </div>
+
+                        <!-- Exposure + Gain row -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="gige-exposure">Exposure (µs)</label>
+                                <input type="number" id="gige-exposure" class="input-text" placeholder="(Optional) e.g. 20000" value="" min="1" max="1000000">
+                            </div>
+                            <div class="form-group">
+                                <label for="gige-gain">Gain</label>
+                                <input type="number" id="gige-gain" class="input-text" placeholder="2" value="2" step="0.1" min="0">
+                            </div>
+                        </div>
+
+                        <!-- Gamma row -->
+                        <div class="form-row">
+                            <div class="form-group" style="width: 100%;">
+                                <label for="gige-gamma">Gamma</label>
+                                <input type="number" id="gige-gamma" class="input-text" placeholder="1.0" value="1.0" step="0.1" min="0" max="4">
+                            </div>
+                        </div>
+
+                        <!-- Trigger Mode -->
+                        <div class="form-group">
+                            <label for="gige-trigger">Trigger Mode</label>
+                            <select id="gige-trigger" class="input-text" style="width: 100%;">
+                                <option value="Continuous" selected>Continuous (Free-Run)</option>
+                                <option value="Software">Software Trigger</option>
+                                <option value="Line0">Hardware — Line 0</option>
+                                <option value="Line1">Hardware — Line 1</option>
+                            </select>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div style="display: flex; gap: 8px; margin-top: 12px;">
+                            <button class="btn-submit" style="flex: 1;" id="gige-connect-btn" onclick="connectGige()">Connect Camera</button>
+                            <button class="btn-submit" style="flex: 1; background: #dc2626;" id="gige-disconnect-btn" onclick="disconnectGige()" disabled>Disconnect</button>
+                        </div>
+                        <div style="display: flex; margin-top: 8px;">
+                            <button class="btn-submit" style="flex: 1; background: #0284c7;" id="gige-save-btn" onclick="updateGigeFeatures()" disabled>Save Settings</button>
+                        </div>
+
+                        <div id="gige-message" style="margin-top: 8px; font-size: 11px; color: #555; text-align: center;"></div>
+                    </div>
+
+                    <!-- CP Plus Config Panel -->
+                    <div class="config-panel" id="cp-plus-config-panel">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="cp-ip">IP Address</label>
+                                <input type="text" id="cp-ip" class="input-text" value="192.10.66.160">
+                            </div>
+                            <div class="form-group">
+                                <label for="cp-port">Port</label>
+                                <input type="text" id="cp-port" class="input-text" value="554">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="cp-user">Username</label>
+                                <input type="text" id="cp-user" class="input-text" value="admin">
+                            </div>
+                            <div class="form-group">
+                                <label for="cp-pwd">Password</label>
+                                <input type="password" id="cp-pwd" class="input-text" value="Vidana_123">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="cp-stream-mode">Stream Resolution Preset</label>
+                            <select id="cp-stream-mode" class="input-text" onchange="document.getElementById('cp-path').value = this.value;" style="margin-bottom: 8px;">
+                                <option value="/video/live?channel=1&subtype=0" selected>1920&times;1080 Full HD (Main Stream - subtype=0)</option>
+                                <option value="/video/live?channel=1&subtype=1">Sub Stream (Bandwidth Saver - subtype=1)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="cp-path">RTSP Path</label>
+                            <input type="text" id="cp-path" class="input-text" value="/video/live?channel=1&subtype=0">
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-top: 10px;">
+                            <button class="btn-submit" style="flex: 1;" id="cp-connect-btn" onclick="connectCpPlus()">Connect CP Plus</button>
+                            <button class="btn-submit" style="flex: 1; background: #dc2626;" id="cp-disconnect-btn" onclick="disconnectCpPlus()" disabled>Disconnect</button>
+                        </div>
+                        <div id="cp-message" style="margin-top: 8px; font-size: 11px; text-align: center;"></div>
+                    </div>
+
+                    <!-- Upload Panel -->
+                    <div class="config-panel" id="upload-config-panel">
+                        
+                        <div style="font-size: 11px; font-weight: 700; color: #1a3a5c; margin-bottom: 6px;">CP Plus Video (Zone Detection)</div>
+                        <div class="upload-area" onclick="triggerFileInput('cp')" style="margin-bottom: 16px; padding: 16px;">
+                            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--accent-blue)">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z"/>
+                            </svg>
+                            <div style="font-weight: 600; color: var(--text-main); margin-top: 4px;">Upload CP Plus Video</div>
+                            <input type="file" id="video-file-input-cp" style="display: none;" accept="video/*" onchange="handleFileSelect(event, 'cp')">
+                        </div>
+
+                        <div style="font-size: 11px; font-weight: 700; color: #1a3a5c; margin-bottom: 6px;">Industrial Video (OCR)</div>
+                        <div class="upload-area" onclick="triggerFileInput('ind')" style="padding: 16px;">
+                            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--accent-green)">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z"/>
+                            </svg>
+                            <div style="font-weight: 600; color: var(--text-main); margin-top: 4px;">Upload Industrial Video</div>
+                            <input type="file" id="video-file-input-ind" style="display: none;" accept="video/*" onchange="handleFileSelect(event, 'ind')">
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Footer -->
+    <footer style="text-align: center; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--dark-border); padding-top: 8px; flex-shrink: 0; font-family: var(--font-body); font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <img src="vidana_logo.jpg" alt="Vidana Logo" style="height: 18px; width: auto; object-fit: contain; border-radius: 2px;">
+        <span>VIDANA CONSULTING PVT LTD</span>
+    </footer>
+
+    <!-- JS Logic -->
+    <script>
+        // Clock functionality
+        function updateClock() {
+            const clockEl = document.getElementById('digital-clock');
+            const now = new Date();
+            const timeString = now.toTimeString().split(' ')[0];
+            clockEl.textContent = timeString;
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // Close sidebar safely if active
+        function closeConfigSidebar() {
+            const sidebar = document.getElementById('config-sidebar');
+            if (sidebar && sidebar.classList.contains('active')) {
+                sidebar.classList.remove('active');
+            }
+        }
+
+        // Handle GigE camera selection
+        function onGigeCameraSelected() {
+            const sel = document.getElementById('gige-camera-select');
+            if (!sel || !sel.value) return;
+            try {
+                const cam = JSON.parse(sel.value);
+                if (cam) {
+                    if (cam.ip) document.getElementById('gige-ip').value = cam.ip;
+                    if (cam.serial || cam.display_name) document.getElementById('gige-serial').value = cam.serial || cam.display_name;
+                }
+            } catch (e) {}
+        }
+
+        // Connect both cameras simultaneously with auto-scan for GigE and CP Plus default IP
+        // Connect both cameras sequentially (one by one) using single button
+        async function connectBothCamerasAuto() {
+            const headerBtn = document.getElementById('header-connect-both-btn');
+            const sidebarBtn = document.getElementById('sidebar-connect-both-btn');
+            const origHeaderHtml = headerBtn ? headerBtn.innerHTML : '';
+            const origSidebarHtml = sidebarBtn ? sidebarBtn.innerHTML : '';
+
+            const setBtnState = (text, loading = true, color = '') => {
+                if (headerBtn) {
+                    headerBtn.disabled = loading;
+                    headerBtn.innerHTML = loading ? `
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin-icon">
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                        </svg>
+                        ${text}
+                    ` : text;
+                    if (color) headerBtn.style.background = color;
+                }
+                if (sidebarBtn) {
+                    sidebarBtn.disabled = loading;
+                    sidebarBtn.innerHTML = text;
+                    if (color) sidebarBtn.style.background = color;
+                }
+            };
+
+            // ── STEP 1: Connect CP Plus (One-by-one) ──────────────────────────
+            setBtnState('1/2 Connecting CP Plus...');
+            const cpIpInput = document.getElementById('cp-ip');
+            if (cpIpInput && (!cpIpInput.value || !cpIpInput.value.trim())) {
+                cpIpInput.value = '192.10.66.160';
+            }
+
+            const cpRes = await connectCpPlusAsync();
+
+            // ── STEP 2: Scan & Select GigE Camera ────────────────────────────
+            setBtnState('2/2 Scanning & Connecting GigE...');
+            const gigeMsgEl = document.getElementById('gige-message');
+            if (gigeMsgEl) {
+                gigeMsgEl.textContent = 'Scanning for GigE camera...';
+                gigeMsgEl.style.color = '#0284c7';
+            }
+
+            try {
+                const res = await fetch('/scan_cameras');
+                const data = await res.json();
+                const sel = document.getElementById('gige-camera-select');
+                if (sel) {
+                    sel.innerHTML = '<option value="">— select a camera —</option>';
+                }
+                if (data.cameras && data.cameras.length > 0) {
+                    data.cameras.forEach(cam => {
+                        const opt = document.createElement('option');
+                        opt.value = JSON.stringify(cam);
+                        opt.textContent = `${cam.model} | ${cam.serial || cam.display_name || ''} | ${cam.ip || ''}`;
+                        if (sel) sel.appendChild(opt);
+                    });
+
+                    // Automatically select first discovered camera
+                    const firstCam = data.cameras[0];
+                    if (sel) sel.value = JSON.stringify(firstCam);
+                    if (firstCam.ip) {
+                        const gigeIpEl = document.getElementById('gige-ip');
+                        if (gigeIpEl) gigeIpEl.value = firstCam.ip;
+                    }
+                    if (firstCam.serial) {
+                        const gigeSerialEl = document.getElementById('gige-serial');
+                        if (gigeSerialEl) gigeSerialEl.value = firstCam.serial;
+                    }
+                    if (gigeMsgEl) {
+                        gigeMsgEl.textContent = `Selected: ${firstCam.model || firstCam.display_name || 'Camera 0'}. Connecting...`;
+                    }
+                } else {
+                    if (gigeMsgEl) {
+                        gigeMsgEl.textContent = 'No GigE cameras scanned, trying direct connect...';
+                    }
+                }
+            } catch (err) {
+                console.warn('GigE auto-scan warning:', err);
+            }
+
+            // ── STEP 3: Connect GigE (One-by-one) ─────────────────────────────
+            const gigeRes = await connectGigeAsync();
+
+            // ── STEP 4: Final Feedback ───────────────────────────────────────
+            if (cpRes.ok && gigeRes.ok) {
+                setBtnState('✓ Both Cameras Connected', false, '#10b981');
+                closeConfigSidebar();
+            } else {
+                const fails = [];
+                if (!cpRes.ok) fails.push('CP Plus');
+                if (!gigeRes.ok) fails.push('GigE');
+                setBtnState(`⚠ Failed: ${fails.join(' & ')}`, false, '#dc2626');
+            }
+
+            setTimeout(() => {
+                if (headerBtn) {
+                    headerBtn.innerHTML = origHeaderHtml;
+                    headerBtn.disabled = false;
+                    headerBtn.style.background = '#10b981';
+                }
+                if (sidebarBtn) {
+                    sidebarBtn.innerHTML = origSidebarHtml;
+                    sidebarBtn.disabled = false;
+                    sidebarBtn.style.background = '#10b981';
+                }
+            }, 3500);
+        }
+
+        // Backward compatibility
+        function connectAllCameras() {
+            connectBothCamerasAuto();
+        }
+
+        // Config sidebar toggle
+        function toggleConfigSidebar() {
+            const sidebar = document.getElementById('config-sidebar');
+            sidebar.classList.toggle('active');
+        }
+
+        // Tab Switching inside collapsible sidebar
+        function switchConfigTab(event, panelId) {
+            const tabs = event.target.parentElement.querySelectorAll('.config-tab-btn');
+            tabs.forEach(tab => tab.classList.remove('active'));
+
+            event.target.classList.add('active');
+
+            const panels = event.target.closest('.config-sidebar').querySelectorAll('.config-panel');
+            panels.forEach(panel => panel.classList.remove('active'));
+
+            document.getElementById(panelId).classList.add('active');
+        }
+
+        // Activate Industrial Camera feed visually
+        function activateStream() {
+            const streamImg = document.getElementById('video-stream');
+            streamImg.src = '/industrial_feed?' + new Date().getTime();
+            streamImg.style.opacity = '1';
+        }
+
+        // Activate CP Plus feed visually
+        function activateCpStream() {
+            const cpStream = document.getElementById('video-stream-cp');
+            if (cpStream) {
+                cpStream.src = '/video_feed_cp?' + Date.now();
+                cpStream.style.display = 'block';
+            }
+            const noSignal = document.getElementById('no-signal-msg-cp');
+            if (noSignal) noSignal.style.display = 'none';
+        }
+
+        function refreshCpStream() {
+            const cpStream = document.getElementById('video-stream-cp');
+            if (cpStream) {
+                cpStream.src = '/video_feed_cp?' + Date.now();
+            }
+        }
+
+        // Camera connection handler — replaced by GigE
+        function scanCameras() {
+            const msgEl = document.getElementById('gige-message');
+            msgEl.textContent = 'Scanning for cameras...';
+            fetch('/scan_cameras')
+                .then(r => r.json())
+                .then(data => {
+                    const sel = document.getElementById('gige-camera-select');
+                    sel.innerHTML = '<option value="">— select a camera —</option>';
+                    if (data.cameras && data.cameras.length > 0) {
+                        data.cameras.forEach(cam => {
+                            const opt = document.createElement('option');
+                            opt.value = JSON.stringify(cam);
+                            opt.textContent = `${cam.model} | ${cam.serial || cam.display_name || ''} | ${cam.ip || ''}`;
+                            sel.appendChild(opt);
+                        });
+                        msgEl.textContent = `Found ${data.cameras.length} camera(s).`;
+                    } else {
+                        msgEl.textContent = 'No cameras found on the network.';
+                    }
+                })
+                .catch(err => { msgEl.textContent = 'Scan failed: ' + err; });
+        }
+
+        async function connectCpPlusAsync() {
+            const msgEl   = document.getElementById('cp-message');
+            const btnCon  = document.getElementById('cp-connect-btn');
+            const btnDis  = document.getElementById('cp-disconnect-btn');
+            if (msgEl) {
+                msgEl.textContent  = 'Connecting CP Plus...';
+                msgEl.style.color  = 'inherit';
+            }
+            if (btnCon) btnCon.disabled = true;
+
+            const ipVal = (document.getElementById('cp-ip').value || '').trim() || '192.10.66.160';
+            const payload = {
+                ip  : ipVal,
+                port: document.getElementById('cp-port').value || 554,
+                user: document.getElementById('cp-user').value || 'admin',
+                pwd : document.getElementById('cp-pwd').value || '',
+                path: document.getElementById('cp-path').value || '/video/live?channel=1&subtype=0'
+            };
+
+            try {
+                const r = await fetch('/connect_camera', {
+                    method : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body   : JSON.stringify(payload)
+                });
+                const data = await r.json();
+                if (data.status === 'success') {
+                    if (msgEl) {
+                        msgEl.textContent = '✓ ' + data.message;
+                        msgEl.style.color = '#16a34a';
+                    }
+                    if (btnDis) btnDis.disabled = false;
+                    activateCpStream();
+                    closeConfigSidebar();
+                    return { ok: true, message: data.message };
+                } else {
+                    if (msgEl) {
+                        msgEl.textContent = '✗ ' + data.message;
+                        msgEl.style.color = '#dc2626';
+                    }
+                    if (btnCon) btnCon.disabled = false;
+                    return { ok: false, message: data.message };
+                }
+            } catch (err) {
+                if (msgEl) {
+                    msgEl.textContent = 'Connection error: ' + err;
+                    msgEl.style.color = '#dc2626';
+                }
+                if (btnCon) btnCon.disabled = false;
+                return { ok: false, message: String(err) };
+            }
+        }
+
+        function connectCpPlus() {
+            return connectCpPlusAsync();
+        }
+
+        function disconnectCpPlus() {
+            const msgEl  = document.getElementById('cp-message');
+            const btnCon = document.getElementById('cp-connect-btn');
+            const btnDis = document.getElementById('cp-disconnect-btn');
+            msgEl.textContent = 'Disconnecting...';
+            msgEl.style.color = '#dc2626';
+
+            fetch('/disconnect_camera', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    msgEl.textContent = '✓ ' + data.message;
+                    msgEl.style.color = '#16a34a';
+                    btnCon.disabled   = false;
+                    btnDis.disabled   = true;
+                    // Replace CP feed with placeholder by reloading
+                    const cpStream = document.getElementById('video-stream-cp');
+                    cpStream.src = '/video_feed_cp?' + new Date().getTime();
+                } else {
+                    msgEl.textContent = '✗ ' + data.message;
+                    msgEl.style.color = '#dc2626';
+                }
+            })
+            .catch(err => {
+                msgEl.textContent = 'Disconnect error: ' + err;
+                msgEl.style.color = '#dc2626';
+            });
+        }
+
+        async function connectGigeAsync() {
+            const msgEl  = document.getElementById('gige-message');
+            const btnCon = document.getElementById('gige-connect-btn');
+            const btnDis = document.getElementById('gige-disconnect-btn');
+            if (msgEl) {
+                msgEl.textContent  = 'Connecting GigE...';
+                msgEl.style.color  = '#0284c7';
+            }
+            if (btnCon) btnCon.disabled = true;
+
+            let camIndex = 0;
+            const sel = document.getElementById('gige-camera-select');
+            if (sel && sel.value) {
+                try {
+                    const parsed = JSON.parse(sel.value);
+                    if (parsed && parsed.id !== undefined) camIndex = parsed.id;
+                } catch (e) {}
+            }
+
+            const expVal = document.getElementById('gige-exposure').value;
+            const payload = {
+                index       : camIndex,
+                camera_ip   : document.getElementById('gige-ip').value,
+                serial      : document.getElementById('gige-serial').value,
+                exposure    : expVal ? parseInt(expVal) : null,
+                gain        : parseFloat(document.getElementById('gige-gain').value),
+                gamma       : parseFloat(document.getElementById('gige-gamma').value),
+                trigger_mode: document.getElementById('gige-trigger').value,
+            };
+
+            try {
+                const r = await fetch('/connect_gige', {
+                    method : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body   : JSON.stringify(payload)
+                });
+                const data = await r.json();
+                if (data.status === 'success') {
+                    if (msgEl) {
+                        msgEl.textContent  = '✓ ' + data.message;
+                        msgEl.style.color  = '#16a34a';
+                    }
+                    if (btnDis) btnDis.disabled = false;
+                    const saveBtn = document.getElementById('gige-save-btn');
+                    if (saveBtn) saveBtn.disabled = false;
+                    activateStream();
+                    closeConfigSidebar();
+                    return { ok: true, message: data.message };
+                } else {
+                    let errMsg = data.message || 'Failed to connect';
+                    if (errMsg.includes('1114121') || errMsg.toLowerCase().includes('cannot open device')) {
+                        errMsg = 'Camera locked by another application (e.g. IKapCViewer). Please close IKapCViewer and retry.';
+                    }
+                    if (msgEl) {
+                        msgEl.textContent = '✗ ' + errMsg;
+                        msgEl.style.color = '#dc2626';
+                    }
+                    if (btnCon) btnCon.disabled = false;
+                    return { ok: false, message: errMsg };
+                }
+            } catch (err) {
+                if (msgEl) {
+                    msgEl.textContent = 'Connection error: ' + err;
+                    msgEl.style.color = '#dc2626';
+                }
+                if (btnCon) btnCon.disabled = false;
+                return { ok: false, message: String(err) };
+            }
+        }
+
+        function connectGige() {
+            return connectGigeAsync();
+        }
+
+        function disconnectGige() {
+            const msgEl = document.getElementById('gige-message');
+            msgEl.textContent = "Disconnecting...";
+            msgEl.style.color = "#dc2626";
+
+            fetch('/disconnect_gige', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    msgEl.innerHTML = `✓ ${data.message}`;
+                    msgEl.style.color = "#16a34a";
+                    document.getElementById('gige-connect-btn').disabled = false;
+                    document.getElementById('gige-disconnect-btn').disabled = true;
+                    document.getElementById('gige-save-btn').disabled = true;
+                } else {
+                    msgEl.innerHTML = `✗ ${data.message}`;
+                    msgEl.style.color = "#dc2626";
+                }
+            })
+            .catch(err => {
+                msgEl.textContent = "Error disconnecting.";
+            });
+        }
+
+        function updateGigeFeatures() {
+            const btn = document.getElementById('gige-save-btn');
+            const msgEl = document.getElementById('gige-message');
+            const originalText = btn.textContent;
+            
+            btn.textContent = "Saving...";
+            btn.disabled = true;
+
+            const expVal = document.getElementById('gige-exposure').value;
+            const payload = {
+                exposure    : expVal ? parseInt(expVal) : null,
+                gain        : parseFloat(document.getElementById('gige-gain').value),
+                gamma       : parseFloat(document.getElementById('gige-gamma').value),
+                trigger_mode: document.getElementById('gige-trigger').value
+            };
+
+            fetch('/update_gige_features', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                if(data.status === 'success') {
+                    msgEl.innerHTML = `✓ ${data.message}`;
+                    msgEl.style.color = "#16a34a";
+                } else {
+                    msgEl.innerHTML = `✗ ${data.message}`;
+                    msgEl.style.color = "#dc2626";
+                }
+            })
+            .catch(err => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                msgEl.textContent = "Error updating settings.";
+            });
+        }
+
+        // Poll /camera_status every second and update status card
+        function pollCameraStatus() {
+            const videoFeed = document.getElementById('video-stream');
+            const msgEl = document.getElementById('gige-message');
+            
+            fetch('/camera_status')
+            .then(r => r.json())
+            .then(s => {
+                document.getElementById('gige-model-name').textContent  = s.model      || '—';
+                document.getElementById('gige-fps').textContent          = s.fps        ? s.fps + ' fps' : '—';
+                document.getElementById('gige-resolution').textContent   = s.resolution || '—';
+                const connEl = document.getElementById('gige-conn-status');
+                
+                if (s.connected) {
+                    connEl.textContent  = 'Connected';
+                    connEl.style.color  = '#16a34a';
+                    // Auto-sync UI if detected connected
+                    if (document.getElementById('gige-connect-btn').disabled === false) {
+                        document.getElementById('gige-connect-btn').disabled = true;
+                        document.getElementById('gige-disconnect-btn').disabled = false;
+                        document.getElementById('gige-save-btn').disabled = false;
+                    }
+                } else {
+                    connEl.textContent  = s.status || 'Disconnected';
+                    connEl.style.color  = '#dc2626';
+                }
+            })
+            .catch(() => {});
+        }
+        setInterval(pollCameraStatus, 1000);
+
+        // File upload trigger
+        function triggerFileInput(type) {
+            if (type === 'ind') {
+                document.getElementById('video-file-input-ind').click();
+            } else {
+                document.getElementById('video-file-input-cp').click();
+            }
+        }
+
+        function handleFileSelect(event, type) {
+            const files = event.target.files;
+            if (files.length > 0) {
+                const formData = new FormData();
+                formData.append('video', files[0]);
+                
+                const route = type === 'ind' ? '/upload_ind_video' : '/upload_video';
+                
+                fetch(route, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        if (type === 'ind') {
+                            activateStream();
+                        } else {
+                            activateCpStream();
+                        }
+                    } else {
+                        alert('Failed to process video upload');
+                    }
+                })
+                .catch(err => console.error('Error uploading video:', err));
+            }
+        }
+
+        // Status Polling Loop
+        function pollStatus() {
+            fetch('/status')
+            .then(res => res.json())
+            .then(data => {
+                // Update live status texts
+                let statusText = data.status;
+                if (!data.is_processing) {
+                    statusText = "VIDEO OFFLINE / PAUSED";
+                    document.getElementById('inspect-status').style.color = '#ff4444';
+                } else {
+                    document.getElementById('inspect-status').style.color = 'var(--text-color)';
+                }
+                document.getElementById('inspect-status').textContent = statusText;
+                
+                // If stream is not active visually, but server is active/processing, auto-activate it
+                const streamImg = document.getElementById('video-stream');
+                const isStandby = streamImg.style.display === 'none' || !streamImg.src;
+                const hasConnectedStream = data.status && 
+                                           !data.status.includes("Awaiting camera connection") && 
+                                           !data.status.includes("Awaiting Camera") &&
+                                           !data.status.includes("Awaiting camera");
+                if (isStandby && hasConnectedStream) {
+                    console.log("Active backend stream detected. Auto-activating video feed.");
+                    activateStream();
+                }
+                document.getElementById('cycle-badge').textContent = 'CYCLE ' + data.cycle_number;
+                
+                // Parse Split Components: Date, Model, Time
+                let serialStr = data.serial || '------';
+                let dateVal = data.serial_date || '------';
+                let modelVal = data.serial_model || '----';
+                let timeVal = data.serial_time || '--:--';
+                let fullDisplay = serialStr;
+
+                // Client-side parser fallback if backend didn't pre-split
+                if ((dateVal === '------' || !dateVal) && serialStr && serialStr !== '------') {
+                    // Try regex match on space/colon format: e.g. "170926 A 065 09:47"
+                    const m = serialStr.match(/(\d{6})\s*([A-Za-z]\s*\d{3})\s*(\d{2})[:.]?(\d{2})/);
+                    if (m) {
+                        dateVal = m[1];
+                        modelVal = m[2].replace(/\s+/g, '').toUpperCase();
+                        timeVal = `${m[3]}:${m[4]}`;
+                        fullDisplay = `${dateVal}${modelVal}${m[3]}${m[4]}`;
+                    } else {
+                        const clean = serialStr.replace(/[^A-Za-z0-9]/g, '');
+                        if (clean.length === 14) {
+                            dateVal = clean.substring(0, 6);
+                            modelVal = clean.substring(6, 10).toUpperCase();
+                            timeVal = `${clean.substring(10, 12)}:${clean.substring(12, 14)}`;
+                            fullDisplay = clean;
+                        } else if (clean.length >= 10) {
+                            dateVal = clean.substring(0, 6);
+                            modelVal = clean.substring(6, 10).toUpperCase();
+                            const rem = clean.substring(10);
+                            timeVal = rem.length === 4 ? `${rem.substring(0, 2)}:${rem.substring(2, 4)}` : rem;
+                            fullDisplay = clean;
+                        }
+                    }
+                }
+
+                const dateEl = document.getElementById('trace-date-val');
+                const modelEl = document.getElementById('trace-model-val');
+                const timeEl = document.getElementById('trace-time-val');
+                const traceEl = document.getElementById('trace-value');
+                if (dateEl) dateEl.textContent = dateVal;
+                if (modelEl) modelEl.textContent = modelVal;
+                if (timeEl) timeEl.textContent = timeVal;
+                if (traceEl) traceEl.textContent = fullDisplay;
+
+                // ── Serial Finalized → Green Highlights ─────────────────────
+                const splitCards = document.querySelectorAll('.trace-split-card');
+                if (data.serial_finalized) {
+                    if (traceEl && !traceEl.classList.contains('finalized')) {
+                        traceEl.classList.add('finalized', 'just-locked');
+                        splitCards.forEach(c => c.classList.add('finalized'));
+                        setTimeout(() => traceEl.classList.remove('just-locked'), 600);
+                    }
+                } else {
+                    if (traceEl) traceEl.classList.remove('finalized', 'just-locked');
+                    splitCards.forEach(c => c.classList.remove('finalized'));
+                }
+
+                // ── Zone Detection UI Update ────────────────────────────────
+                const zoneKeys = [
+                    { id: 'inner1', statusKey: 'zone_inner1_status', progressKey: 'zone_inner1_progress' },
+                    { id: 'inner2', statusKey: 'zone_inner2_status', progressKey: 'zone_inner2_progress' },
+                    { id: 'outer1', statusKey: 'zone_outer1_status', progressKey: 'zone_outer1_progress' },
+                    { id: 'outer2', statusKey: 'zone_outer2_status', progressKey: 'zone_outer2_progress' },
+                ];
+                zoneKeys.forEach(z => {
+                    const card  = document.getElementById('zone-' + z.id);
+                    const badge = document.getElementById('zone-' + z.id + '-badge');
+                    const fill  = document.getElementById('zone-' + z.id + '-fill');
+                    if (!card) return;
+
+                    const status   = (data[z.statusKey]   || 'idle').toLowerCase();
+                    const progress = data[z.progressKey]  || 0;
+
+                    card.classList.remove('detecting', 'done', 'error', 'adjusting', 'ready_to_inspect', 'capturing');
+
+                    if (status === 'detecting') {
+                        card.classList.add('detecting');
+                        badge.textContent = 'INSPECTING';
+                        fill.style.width  = Math.min(progress, 100) + '%';
+                    } else if (status === 'adjusting') {
+                        card.classList.add('adjusting');
+                        badge.textContent = '⏱ ADJUST PART';
+                        fill.style.width  = '100%';
+                    } else if (status === 'capturing') {
+                        card.classList.add('capturing');
+                        badge.textContent = '📸 CAPTURING';
+                        fill.style.width  = '100%';
+                    } else if (status === 'ready_to_inspect') {
+                        card.classList.add('ready_to_inspect');
+                        badge.textContent = '📸 CAPTURED';
+                        fill.style.width  = '100%';
+                    } else if (status === 'done') {
+                        card.classList.add('done');
+                        badge.textContent = '✓ CAPTURED';
+                        fill.style.width  = '100%';
+                    } else if (status === 'error') {
+                        card.classList.add('error');
+                        badge.textContent = '⚠ HAND MISSING';
+                        fill.style.width  = Math.min(progress, 100) + '%';
+                    } else {
+                        badge.textContent = 'IDLE';
+                        fill.style.width  = '0%';
+                    }
+
+                });
+
+                // ── Operator Instruction Banner ──────────────────────────
+                const instrEl = document.getElementById('instruction-banner');
+                const videoInstrEl = document.getElementById('video-instruction-banner');
+                if (data.instruction) {
+                    if (instrEl) {
+                        instrEl.textContent = data.instruction;
+                        instrEl.classList.remove('blue', 'orange', 'red', 'green');
+                    }
+                    if (videoInstrEl) {
+                        videoInstrEl.textContent = data.instruction;
+                        videoInstrEl.style.display = 'block';
+                        videoInstrEl.classList.remove('blue', 'orange', 'red', 'green');
+                        // Reset animation for red shake
+                        if ((data.instruction_color || '').toLowerCase() === 'red') {
+                            videoInstrEl.style.animation = 'none';
+                            void videoInstrEl.offsetWidth; // trigger reflow
+                            videoInstrEl.style.animation = null; 
+                        }
+                    }
+
+                    const instrColor = (data.instruction_color || '').toLowerCase();
+                    if (['blue', 'orange', 'red', 'green'].includes(instrColor)) {
+                        if (instrEl) instrEl.classList.add(instrColor);
+                        if (videoInstrEl) videoInstrEl.classList.add(instrColor);
+                    }
+                } else if (videoInstrEl) {
+                    videoInstrEl.style.display = 'none';
+                }
+
+                // ── Zone Missing Alert ────────────────────────────────
+                const alertEl    = document.getElementById('zone-alert');
+                const alertZones = document.getElementById('zone-alert-zones');
+                const alertRetry = document.getElementById('zone-alert-retry');
+                const zoneNames  = {
+                    inner1: 'Inner Zone 1', inner2: 'Inner Zone 2',
+                    outer1: 'Outer Zone 1', outer2: 'Outer Zone 2'
+                };
+                if (alertEl) {
+                    const errorZones   = zoneKeys.filter(z => (data[z.statusKey] || '').toLowerCase() === 'error')
+                                                  .map(z => zoneNames[z.id]);
+                    const retryingZones = zoneKeys.filter(z => (data[z.statusKey] || '').toLowerCase() === 'detecting')
+                                                   .map(z => zoneNames[z.id]);
+
+                    if (errorZones.length > 0) {
+                        alertZones.textContent = 'Missing: ' + errorZones.join(', ');
+                        // Shake when error zones change
+                        const key = errorZones.join(',');
+                        if (alertEl._prevKey !== key) {
+                            alertEl._prevKey = key;
+                            alertEl.classList.remove('shaking');
+                            void alertEl.offsetWidth;   // force reflow
+                            alertEl.classList.add('shaking');
+                        }
+                        alertEl.classList.add('active');
+                        // Show retry hint if operator is actively re-detecting
+                        if (alertRetry) {
+                            if (retryingZones.length > 0) {
+                                alertRetry.textContent = '↻ RETRYING: ' + retryingZones.join(', ');
+                                alertRetry.classList.add('visible');
+                            } else {
+                                alertRetry.classList.remove('visible');
+                            }
+                        }
+                    } else {
+                        alertEl.classList.remove('active', 'shaking');
+                        alertEl._prevKey = '';
+                        if (alertRetry) alertRetry.classList.remove('visible');
+                    }
+                }
+
+            })
+            .catch(err => {
+                // Silently ignore transient network errors (e.g. GigE adapter change).
+                // The next poll interval will retry automatically.
+            });
+        }
+
+        function reloadVideoStream() {
+            const img = document.getElementById('video-stream');
+            img.src = '/industrial_feed?' + new Date().getTime();
+        }
+        function updateStepUI(stepId, status) {
+            const stepEl = document.getElementById(stepId);
+            const statusEl = stepEl.querySelector('.step-status');
+            statusEl.textContent = status;
+            
+            stepEl.classList.remove('step-done', 'step-active');
+            
+            if (status === 'OK' || status === 'PASS') {
+                stepEl.classList.add('step-done');
+            } else if (status === 'Capturing...') {
+                stepEl.classList.add('step-active');
+            }
+        }
+
+        // Start polling status
+        setInterval(pollStatus, 500);
+    </script>
+    <!-- Floating Zone Alert -->
+    <div class="zone-alert" id="zone-alert">
+        <div class="zone-alert-title">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+            HAND NOT DETECTED
+        </div>
+        <div class="zone-alert-zones" id="zone-alert-zones"></div>
+        <div class="zone-alert-hint">Keep your hand on the part during inspection. Adjust position and hold steady.</div>
+        <div class="zone-alert-retry" id="zone-alert-retry"></div>
+    </div>
+</body>
+</html>
