@@ -57,8 +57,28 @@ DATA_DIR      = os.path.join(BASE_DIR, DATA_DIR_NAME)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
+import yaml
+
 app = Flask(__name__, static_folder=BASE_DIR)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+
+CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
+_last_config_mtime = 0
+_cached_config = {}
+
+def get_conf_threshold(cls_name):
+    global _last_config_mtime, _cached_config
+    if os.path.exists(CONFIG_PATH):
+        try:
+            mtime = os.path.getmtime(CONFIG_PATH)
+            if mtime != _last_config_mtime:
+                with open(CONFIG_PATH, "r") as f:
+                    _cached_config = yaml.safe_load(f) or {}
+                _last_config_mtime = mtime
+        except Exception as e:
+            log.error(f"Error loading config.yaml: {e}")
+    thresholds = _cached_config.get("confidence_thresholds", {})
+    return thresholds.get(cls_name, thresholds.get("default", 0.5))
 
 lock = threading.RLock()
 
@@ -764,7 +784,7 @@ CAPTURE_DELAY = 5.0      # seconds after "remove hand" before capturing
 # ── YOLO Zone Detection Worker ────────────────────────────────────────────────
 try:
     from ultralytics import YOLO
-    zone_model_path = os.path.join(BASE_DIR, "Models", "shi-seq-v2-100-epochs.pt")
+    zone_model_path = os.path.join(BASE_DIR, "Models", "SHI_SEQ_V3.pt")
     log.info(f"Loading Zone YOLO model ({zone_model_path})...")
     zone_model = YOLO(zone_model_path)
 except Exception as e:
@@ -884,6 +904,10 @@ def zone_inference_loop():
                     c_id     = int(boxes.cls[i].item())
                     conf     = float(boxes.conf[i].item())
                     cls_name = zone_model.names[c_id]
+
+                    if conf < get_conf_threshold(cls_name):
+                        continue
+
                     xyxy     = boxes.xyxy[i].cpu().numpy().astype(int).tolist()
 
                     # Polygon points from segmentation masks (xy scaled to frame)

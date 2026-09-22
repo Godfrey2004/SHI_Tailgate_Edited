@@ -1,0 +1,6 @@
+confidence_thresholds:
+  default: 0.50
+  seq_innerzone1: 0.50
+  seq_innerzone2: 0.50
+  seq_outerzone1: 0.50
+  seq_outerzone2: 0.50
