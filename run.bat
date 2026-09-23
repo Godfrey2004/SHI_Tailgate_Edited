@@ -1,7 +1,10 @@
 @echo off
-set "PATH=C:\Users\HAI\AppData\Local\Programs\Python\Python310;C:\Users\HAI\AppData\Local\Programs\Python\Python310\Scripts;%PATH%"
+title SHI Tailgate Inspection System
 cd /d "%~dp0"
-echo Starting SHI Tail Gate application...
-start /b python -c "import time, webbrowser; time.sleep(2); webbrowser.open('http://localhost:5000')"
+echo ============================================================
+echo   SHI Tailgate Inspection System
+echo   Starting server... Please wait.
+echo ============================================================
+start /b python -c "import time, webbrowser; time.sleep(3); webbrowser.open('http://localhost:5000')"
 python app.py
 pause

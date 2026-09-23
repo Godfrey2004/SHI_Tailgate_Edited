@@ -4,3 +4,22 @@ __pycache__/
 logs/
 tailgate_data/
 uploads/
+
+# Scratch / debug files
+diff.txt
+diff_utf8.txt
+fix_layout.py
+check_video.py
+frame_test.jpg
+test_paddle.py
+test_yolo.py
+new_layout.html
+good_layout.html
+walkthrough.md
+
+# Old unused models (only Models/serial/best.pt and Models/sequence/SHI_SEQ_V3.pt are used)
+Models/shi-serial-v2.pt
+Models/shi-serial.pt
+Models/shi-seq-v2-100-epochs.pt
+Models/shi-seq.pt
+Models/serial/shi-serial-v2.pt

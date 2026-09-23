@@ -10,7 +10,7 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "analyzeduration;0"
 )
 
-import re, cv2, time, ctypes, threading, sys, atexit, logging
+import re, cv2, time, ctypes, threading, sys, atexit, logging, subprocess
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
@@ -47,7 +47,7 @@ try:
     log.info("IKapC SDK loaded OK")
 except ImportError:
     SDK_AVAILABLE = False
-    log.warning("IKapC SDK NOT found – industrial camera disabled")
+    log.warning("IKapC SDK NOT found - industrial camera disabled")
 
 # ── Flask app ─────────────────────────────────────────────────────────────────
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -66,7 +66,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 _last_config_mtime = 0
 _cached_config = {}
 
-def get_conf_threshold(cls_name):
+def load_config():
     global _last_config_mtime, _cached_config
     if os.path.exists(CONFIG_PATH):
         try:
@@ -77,10 +77,28 @@ def get_conf_threshold(cls_name):
                 _last_config_mtime = mtime
         except Exception as e:
             log.error(f"Error loading config.yaml: {e}")
+
+def get_conf_threshold(cls_name):
+    load_config()
     thresholds = _cached_config.get("confidence_thresholds", {})
     return thresholds.get(cls_name, thresholds.get("default", 0.5))
 
+def get_timing(key, default):
+    load_config()
+    timings = _cached_config.get("timings", {})
+    return float(timings.get(key, default))
+
+def get_banner(key, default, **kwargs):
+    load_config()
+    banners = _cached_config.get("banners", {})
+    template = banners.get(key, default)
+    try:
+        return template.format(**kwargs)
+    except Exception as e:
+        return default
+
 lock = threading.RLock()
+cycle_count = 1
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 current_cycle = {
@@ -89,7 +107,8 @@ current_cycle = {
     "cycle_number"    : "#001",
     "serial"          : "------",
     "serial_date"     : "------",
-    "serial_model"    : "----",
+    "serial_shift"    : "-",
+    "serial_count"    : "---",
     "serial_time"     : "--:--",
     "confidence"      : "- -",
     "serial_finalized": False,  # True when OCR voting has locked the serial
@@ -105,15 +124,15 @@ current_cycle = {
     "instruction"     : "WAITING FOR PART",
     "instruction_color": "blue",
     # ── Zone Detection ──────────────────────────────────────────────────────
-    # status: "idle" | "detecting" | "done" | "error"
+    # status: "waiting_for_zone" | "capturing" | "ready_to_inspect" | "detecting" | "done"
     # progress: 0-100
-    "zone_inner1_status"  : "idle",
+    "zone_inner1_status"  : "waiting_for_zone",
     "zone_inner1_progress": 0,
-    "zone_inner2_status"  : "idle",
+    "zone_inner2_status"  : "waiting_for_zone",
     "zone_inner2_progress": 0,
-    "zone_outer1_status"  : "idle",
+    "zone_outer1_status"  : "waiting_for_zone",
     "zone_outer1_progress": 0,
-    "zone_outer2_status"  : "idle",
+    "zone_outer2_status"  : "waiting_for_zone",
     "zone_outer2_progress": 0,
     # ── Cycle Statistics ────────────────────────────────────────────────────
     # cycle_result: "idle" | "running" | "PASS" | "FAIL"
@@ -143,6 +162,7 @@ def cp_capture_loop():
     consecutive_fail = 0
     log.info("[CP] Dedicated RTSP capture loop started")
     while True:
+        start_t = time.time()
         with cp_frame_lock:
             cap = cp_cap
             active = cp_stream_active
@@ -154,7 +174,7 @@ def cp_capture_loop():
         if not ret:
             consecutive_fail += 1
             if consecutive_fail > 60:
-                log.warning("[CP] Too many read failures – marking stream inactive")
+                log.warning("[CP] Too many read failures - marking stream inactive")
                 with cp_frame_lock:
                     cp_stream_active = False
                 consecutive_fail = 0
@@ -171,6 +191,11 @@ def cp_capture_loop():
             cp_latest_raw_frame = frame
             cp_latest_frame = frame
         cp_frame_event.set()
+        
+        elapsed = time.time() - start_t
+        target_fps = 1.0 / 30.0
+        if elapsed < target_fps:
+            time.sleep(target_fps - elapsed)
 
 threading.Thread(target=cp_capture_loop, daemon=True).start()
 
@@ -183,11 +208,11 @@ def cp_display_loop():
 
     # Colour palette per class (BGR)
     CLASS_COLORS = {
-        "seg_innerzone1": (255, 178,  50),   # cyan-ish teal
-        "seg_innerzone2": (255, 178,  50),
-        "seg_outerzone1": (255, 178,  50),
-        "seg_outerzone2": (255, 178,  50),
-        "hand"          : (200,  80,  80),   # blue for hand
+        "seg_innerzone1": (255, 200,   0),   # Blue
+        "seg_innerzone2": (0,   255,   0),   # Green
+        "seg_outerzone1": (255,  50, 255),   # Magenta/Pink
+        "seg_outerzone2": (0,   165, 255),   # Orange
+        "hand"          : (40,   40, 255),   # Red
     }
     DEFAULT_COLOR = (180, 230, 180)
 
@@ -214,39 +239,31 @@ def cp_display_loop():
 
         if segs_to_draw:
             draw_frame = frame.copy()
-            overlay = draw_frame.copy()
-
             for seg in segs_to_draw:
                 cls_name = seg["name"]
-                conf     = seg["conf"]
                 color    = CLASS_COLORS.get(cls_name.lower(), DEFAULT_COLOR)
-                pts      = seg.get("pts")    # polygon points or None
+                
+                # Draw thick bounding box instead of mask
+                x1, y1, x2, y2 = seg["xyxy"]
+                cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 4)
+                lx, ly = x1, max(y1 - 10, 10)
 
-                if pts is not None and len(pts) >= 3:
-                    poly = np.array(pts, dtype=np.int32)
-                    cv2.fillPoly(overlay, [poly], color)
-                    cv2.polylines(draw_frame, [poly], isClosed=True, color=color, thickness=2)
-                    rx, ry, rw, rh = cv2.boundingRect(poly)
-                    lx, ly = rx, max(ry - 6, 10)
-                else:
-                    x1, y1, x2, y2 = seg["xyxy"]
-                    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-                    cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
-                    lx, ly = x1, max(y1 - 6, 10)
-
-                label = f"{cls_name} {conf:.2f}"
-                font_scale = 1.2
+                # Label without confidence threshold
+                label = f"{cls_name}"
+                font_scale = 1.0
                 thickness = 2
                 (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                cv2.rectangle(draw_frame, (lx, ly - th - 8), (lx + tw + 12, ly + baseline + 6),
-                              (255, 255, 255), -1)
-                cv2.putText(draw_frame, label, (lx + 6, ly),
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (139, 0, 0), thickness, cv2.LINE_AA)
-
-            cv2.addWeighted(overlay, 0.38, draw_frame, 0.62, 0, draw_frame)
+                
+                # Label background
+                cv2.rectangle(draw_frame, (lx, ly - th - 8), (lx + tw + 12, ly + baseline + 4), color, -1)
+                
+                # Label text
+                cv2.putText(draw_frame, label, (lx + 6, ly), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
         else:
             draw_frame = frame
 
+        # (Banner drawing removed to avoid double-banner with HTML UI)
+        
         # JPEG encode at quality 70 (crisp 1080p, low network payload)
         _, buf = cv2.imencode(".jpg", draw_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         jpeg_bytes = buf.tobytes()
@@ -259,8 +276,8 @@ def cp_display_loop():
 threading.Thread(target=cp_display_loop, daemon=True).start()
 
 def gen_cp_frames():
-    """MJPEG generator for CP Plus stream – yields only fresh frames with zero duplicate flooding."""
-    placeholder = _make_placeholder("CP Plus – NO SIGNAL")
+    """MJPEG generator for CP Plus stream - yields only fresh frames with zero duplicate flooding."""
+    placeholder = _make_placeholder("CP Plus - NO SIGNAL")
     last_seq = -1
     while True:
         with cp_jpeg_cond:
@@ -507,14 +524,27 @@ class CameraStreamer:
 cam = CameraStreamer()
 atexit.register(cam.disconnect)
 
+# Auto-start standalone OCR Engine
+ocr_process = None
 try:
-    from ocr_processor import TailgateOCR
-    ocr_worker = TailgateOCR()
-    ocr_worker.start()
-    log.info("TailgateOCR worker initialized")
+    log.info("Starting standalone OCR process in background...")
+    ocr_process = subprocess.Popen([sys.executable, "ocr_processor.py"])
+    
+    def cleanup_ocr_process():
+        if ocr_process:
+            log.info("Terminating standalone OCR process...")
+            ocr_process.terminate()
+            try:
+                ocr_process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                ocr_process.kill()
+            
+    atexit.register(cleanup_ocr_process)
 except Exception as e:
-    ocr_worker = None
-    log.warning(f"Failed to initialize TailgateOCR worker: {e}")
+    log.error(f"Failed to start standalone OCR process: {e}")
+
+current_ocr_box = None  # Receives coordinates from the standalone OCR process
+ind_latest_raw_frame = None  # Stored globally for the standalone OCR process to fetch
 
 # ── Industrial feed MJPEG generator ──────────────────────────────────────────
 ind_latest_jpeg   = None
@@ -525,10 +555,11 @@ ind_video_cap     = None
 ind_video_active  = False
 
 def ind_capture_loop():
-    global ind_latest_jpeg, ind_video_cap, ind_video_active, ind_frame_seq
+    global ind_latest_jpeg, ind_video_cap, ind_video_active, ind_frame_seq, ind_latest_raw_frame
     log.info("[IND] Capture loop started")
     consecutive_fail = 0
     while True:
+        start_t = time.time()
         frame = None
         if ind_video_active and ind_video_cap is not None:
             ret, frame = ind_video_cap.read()
@@ -548,19 +579,26 @@ def ind_capture_loop():
             frame = cam.get_frame()
             
         if frame is not None:
-            if ocr_worker is not None:
-                ocr_worker.process_frame(frame)
+            ind_latest_raw_frame = frame.copy()
+            if current_ocr_box:
+                x1, y1, x2, y2 = current_ocr_box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, "OCR CROP", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
             _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             with ind_jpeg_cond:
                 ind_latest_jpeg = buf.tobytes()
                 ind_frame_seq += 1
                 ind_jpeg_cond.notify_all()
-        time.sleep(0.01)
+                
+        elapsed = time.time() - start_t
+        target_fps = 1.0 / 30.0
+        if elapsed < target_fps:
+            time.sleep(target_fps - elapsed)
 
 threading.Thread(target=ind_capture_loop, daemon=True).start()
 
 def gen_ind_frames():
-    placeholder = _make_placeholder("Industrial – NO SIGNAL")
+    placeholder = _make_placeholder("Industrial - NO SIGNAL")
     last_seq = -1
     while True:
         with ind_jpeg_cond:
@@ -767,24 +805,18 @@ def camera_diag():
 ALL_ZONES = ("inner1", "inner2", "outer1", "outer2")
 
 # ── Zone Configuration ────────────────────────────────────────────────────────
-# inspect_time : recommended inspection duration (progress bar fills over this)
-# MIN_INSPECT_TIME : minimum hand-on-part time before capture is allowed
-#                    Prevents accidental captures from brief hand touches.
-#                    If operator finishes faster than inspect_time but above
-#                    MIN_INSPECT_TIME, the system captures (early finish OK).
+# inspect_time : Exactly 3.0 seconds accumulated time for all zones.
 ZONE_CONFIG = {
-    "inner1": {"name": "Inner Zone 1", "inspect_time": 8.0, "adjust_time": 4.0},
-    "inner2": {"name": "Inner Zone 2", "inspect_time": 8.0, "adjust_time": 4.0},
-    "outer1": {"name": "Outer Zone 1", "inspect_time": 8.0, "adjust_time": 7.0},
-    "outer2": {"name": "Outer Zone 2", "inspect_time": 8.0, "adjust_time": 4.0},
+    "inner1": {"name": "Inner Zone 1", "inspect_time": 3.0},
+    "inner2": {"name": "Inner Zone 2", "inspect_time": 3.0},
+    "outer1": {"name": "Outer Zone 1", "inspect_time": 3.0},
+    "outer2": {"name": "Outer Zone 2", "inspect_time": 3.0},
 }
-MIN_INSPECT_TIME = 3.0   # seconds — minimum hand presence before capture allowed
-CAPTURE_DELAY = 5.0      # seconds after "remove hand" before capturing
 
 # ── YOLO Zone Detection Worker ────────────────────────────────────────────────
 try:
     from ultralytics import YOLO
-    zone_model_path = os.path.join(BASE_DIR, "Models", "SHI_SEQ_V3.pt")
+    zone_model_path = os.path.join(BASE_DIR, "Models", "sequence", "SHI_SEQ_V3.pt")
     log.info(f"Loading Zone YOLO model ({zone_model_path})...")
     zone_model = YOLO(zone_model_path)
 except Exception as e:
@@ -866,7 +898,7 @@ def zone_inference_loop():
                   If zone disappears for >1.5s → error (hand removed too early).
     - ready_to_capture: inspection complete. Instruct "REMOVE HAND FOR CAPTURE".
                         After CAPTURE_DELAY seconds → capture clean frame → done.
-    - error:      recoverable – if zone detected again, resumes detecting.
+    - error:      recoverable - if zone detected again, resumes detecting.
     - done:       zone captured. Show instruction for next zone.
     
     OCR runs in parallel on the industrial camera. If all zones done but OCR
@@ -971,68 +1003,65 @@ def zone_inference_loop():
                     is_detected = (detected_zone == zone)
                     cfg = ZONE_CONFIG[zone]
 
-                    # ── IDLE: auto-start adjusting phase if it's the next expected zone ───────
-                    if status == "idle":
+                    # ── WAITING_FOR_ZONE: operator-paced sequence enforcement ───────
+                    if status == "waiting_for_zone":
                         if zone == expected_zone:
-                            adjust_time = cfg.get("adjust_time", 7.0 if zone == "outer1" else 4.0)
-                            current_cycle[f"zone_{zone}_status"] = "adjusting"
-                            zt[zone]["adjust_start"] = now
-                            if current_cycle["cycle_result"] == "idle":
-                                current_cycle["cycle_result"] = "running"
-                            current_cycle["instruction"] = (
-                                f"ADJUST PART FOR {cfg['name'].upper()} ({adjust_time:.1f}s)"
-                            )
-                            current_cycle["instruction_color"] = "orange"
+                            if is_detected:
+                                # The expected zone is presented, begin capture!
+                                current_cycle[f"zone_{zone}_status"] = "capturing"
+                                zt[zone]["capture_start"] = now
+                                if current_cycle["cycle_result"] == "idle":
+                                    current_cycle["cycle_result"] = "running"
+                                capture_delay = get_timing(f"capture_delay_{zone}", 2.0)
+                                current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({capture_delay:.1f}s)", time=f"{capture_delay:.1f}")
+                                current_cycle["instruction_color"] = "orange"
+                            elif detected_zone is not None and detected_zone in ALL_ZONES and detected_zone != expected_zone:
+                                # Detected an OUT OF SEQUENCE zone!
+                                wrong_zone_cfg = ZONE_CONFIG.get(detected_zone)
+                                current_cycle["instruction"] = get_banner("wrong_zone", f"WRONG ZONE DETECTED: PLEASE ROTATE TO {cfg['name'].upper()}", zone_name=cfg['name'].upper())
+                                current_cycle["instruction_color"] = "red"
+                            else:
+                                current_cycle["instruction"] = get_banner("waiting", f"WAITING FOR {cfg['name'].upper()}", zone_name=cfg['name'].upper())
+                                current_cycle["instruction_color"] = "blue"
 
-                    # ── ADJUSTING: pre-timing for turning/adjusting part (7s for outer1, 4s for others) ───
-                    elif status == "adjusting":
-                        adjust_time = cfg.get("adjust_time", 7.0 if zone == "outer1" else 4.0)
-                        elapsed = now - zt[zone].get("adjust_start", now)
-                        remaining = max(0, adjust_time - elapsed)
-                        
-                        if remaining > 0:
-                            current_cycle["instruction"] = (
-                                f"ADJUST PART FOR {cfg['name'].upper()} ({remaining:.1f}s)"
-                            )
-                            current_cycle["instruction_color"] = "orange"
-                        else:
-                            # Pre-timing adjust complete -> Move to 1.5s photo capturing window
-                            current_cycle[f"zone_{zone}_status"] = "capturing"
-                            zt[zone]["capture_start"] = now
-                            current_cycle["instruction"] = (
-                                "HOLD STEADY — CAPTURING PHOTO (1.5s)"
-                            )
-                            current_cycle["instruction_color"] = "orange"
-
-                    # ── CAPTURING: 1.5-second steady capture window ──────────
+                    # ── CAPTURING: steady capture window ──────────
                     elif status == "capturing":
+                        capture_delay = get_timing(f"capture_delay_{zone}", 2.0)
                         elapsed = now - zt[zone].get("capture_start", now)
-                        remaining = max(0, 1.5 - elapsed)
+                        remaining = max(0, capture_delay - elapsed)
 
                         if remaining > 0:
-                            current_cycle["instruction"] = (
-                                f"HOLD STEADY — CAPTURING PHOTO ({remaining:.1f}s)"
-                            )
-                            current_cycle["instruction_color"] = "orange"
+                            if not is_detected:
+                                # They moved it too early during steady hold
+                                current_cycle[f"zone_{zone}_status"] = "waiting_for_zone"
+                                current_cycle["instruction"] = get_banner("lost_zone", f"LOST {cfg['name'].upper()} - PLEASE REPOSITION", zone_name=cfg['name'].upper())
+                                current_cycle["instruction_color"] = "red"
+                            else:
+                                current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({remaining:.1f}s)", time=f"{remaining:.1f}")
+                                current_cycle["instruction_color"] = "orange"
                         else:
-                            # 1.5s capture window complete -> Grab the full, clean 1920x1080 CP Plus frame
-                            with cp_frame_lock:
-                                raw_to_save = cp_latest_frame.copy() if cp_latest_frame is not None else frame.copy()
+                            # capture window complete -> Check if hand is in frame
+                            is_hand_detected = any(seg["name"].lower() == "hand" for seg in segs_to_save)
+                            if is_hand_detected:
+                                zt[zone]["capture_start"] = now
+                                current_cycle["instruction"] = get_banner("hand_detected", "HAND DETECTED! PLEASE REMOVE HAND")
+                                current_cycle["instruction_color"] = "red"
+                            else:
+                                # Safe to capture -> Grab the full frame
+                                with cp_frame_lock:
+                                    raw_to_save = cp_latest_frame.copy() if cp_latest_frame is not None else frame.copy()
 
-                            _, clean_buf = cv2.imencode(".jpg", raw_to_save, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                            clean_jpeg = clean_buf.tobytes()
-                            current_cycle.setdefault("zone_images", {})[zone] = clean_jpeg
-                            log.info(f"[ZONE] {zone} CAPTURED clean full frame (1920x1080) after 4s adjust + 1.5s steady")
-                            
-                            # Save image to disk immediately inside serial folder
-                            _save_image_to_disk(zone, clean_jpeg)
+                                _, clean_buf = cv2.imencode(".jpg", raw_to_save, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                                clean_jpeg = clean_buf.tobytes()
+                                current_cycle.setdefault("zone_images", {})[zone] = clean_jpeg
+                                log.info(f"[ZONE] {zone} CAPTURED clean frame")
+                                
+                                _save_image_to_disk(zone, clean_jpeg)
 
-                            current_cycle[f"zone_{zone}_status"] = "ready_to_inspect"
-                            zt[zone]["last_seen"] = now
-                            current_cycle["instruction"] = (
-                                "PHOTO CAPTURED — START INSPECTION (PLACE HAND)"
-                            )
-                            current_cycle["instruction_color"] = "blue"
+                                current_cycle[f"zone_{zone}_status"] = "ready_to_inspect"
+                                zt[zone]["last_seen"] = now
+                                current_cycle["instruction"] = get_banner("photo_captured", "PHOTO CAPTURED - START INSPECTION (PLACE HAND)")
+                                current_cycle["instruction_color"] = "green"
 
                     # ── READY_TO_INSPECT: waiting for operator hand ───────
                     elif status == "ready_to_inspect":
@@ -1041,88 +1070,39 @@ def zone_inference_loop():
                             zt[zone]["detect_start"] = now
                             zt[zone]["last_seen"] = now
                             zt[zone]["accumulated"] = 0.0
-                            current_cycle["instruction"] = (
-                                f"INSPECTING {cfg['name'].upper()} — KEEP HAND ON PART"
-                            )
+                            current_cycle["instruction"] = get_banner("inspecting", f"INSPECTING {cfg['name'].upper()} - KEEP HAND ON PART", zone_name=cfg['name'].upper())
                             current_cycle["instruction_color"] = "blue"
 
-                    # ── DETECTING: hand on part, progress filling over time ───
+                    # ── DETECTING: hand on part, accumulate inspect_time ───
                     elif status == "detecting":
                         if is_detected:
+                            elapsed_since_last = now - zt[zone]["last_seen"]
+                            zt[zone]["accumulated"] += elapsed_since_last
                             zt[zone]["last_seen"] = now
-                            elapsed = zt[zone]["accumulated"] + (now - zt[zone]["detect_start"])
-                            progress = min(100, int((elapsed / cfg["inspect_time"]) * 100))
+
+                            inspect_time = get_timing(f"inspect_time_{zone}", cfg["inspect_time"])
+                            progress = min(100, int((zt[zone]["accumulated"] / inspect_time) * 100))
                             current_cycle[f"zone_{zone}_progress"] = progress
 
                             if progress >= 100:
-                                # Full inspection time reached
                                 current_cycle[f"zone_{zone}_status"] = "done"
                                 current_cycle[f"zone_{zone}_progress"] = 100
-                                log.info(f"[ZONE] {zone} full inspection complete ({elapsed:.1f}s)")
+                                log.info(f"[ZONE] {zone} full inspection complete ({zt[zone]['accumulated']:.1f}s)")
                                 
-                                # Instruct for next zone or OCR
                                 nxt = _get_next_pending_zone()
                                 if nxt:
-                                    # next zone will automatically go to adjusting on next loop
                                     pass
                                 else:
-                                    # All zones done
                                     if not current_cycle.get("serial_finalized"):
-                                        current_cycle["instruction"] = (
-                                            "OCR NOT CAPTURED — KEEP PART FOR SERIAL"
-                                        )
+                                        current_cycle["instruction"] = "OCR NOT CAPTURED - KEEP PART FOR SERIAL"
                                         current_cycle["instruction_color"] = "orange"
                                 _maybe_finalize_cycle()
+                            else:
+                                current_cycle["instruction"] = get_banner("inspecting", f"INSPECTING {cfg['name'].upper()} - KEEP HAND ON PART", zone_name=cfg['name'].upper())
+                                current_cycle["instruction_color"] = "blue"
                         else:
-                            # Zone not detected — hand possibly removed
-                            gap = now - zt[zone]["last_seen"]
-                            if gap > 1.5:
-                                # Calculate total time hand was on part
-                                total_on_part = zt[zone]["accumulated"] + (
-                                    zt[zone]["last_seen"] - zt[zone]["detect_start"]
-                                )
-
-                                if total_on_part >= MIN_INSPECT_TIME:
-                                    # ── EARLY FINISH OK ──────────────────────
-                                    current_cycle[f"zone_{zone}_status"] = "done"
-                                    current_cycle[f"zone_{zone}_progress"] = 100
-                                    log.info(f"[ZONE] {zone} early finish ({total_on_part:.1f}s)")
-                                    
-                                    # Instruct for next zone or OCR
-                                    nxt = _get_next_pending_zone()
-                                    if nxt:
-                                        pass
-                                    else:
-                                        if not current_cycle.get("serial_finalized"):
-                                            current_cycle["instruction"] = (
-                                                "OCR NOT CAPTURED — KEEP PART FOR SERIAL"
-                                            )
-                                            current_cycle["instruction_color"] = "orange"
-                                    _maybe_finalize_cycle()
-                                else:
-                                    # ── TOO EARLY — hand slipped ─────────────
-                                    zt[zone]["accumulated"] += (
-                                        zt[zone]["last_seen"] - zt[zone]["detect_start"]
-                                    )
-                                    current_cycle[f"zone_{zone}_status"] = "error"
-                                    current_cycle["instruction"] = (
-                                        "HAND NOT DETECTED — CHECK PROPERLY"
-                                    )
-                                    current_cycle["instruction_color"] = "red"
-                                    log.warning(f"[ZONE] {zone} hand lost too early "
-                                                f"({total_on_part:.1f}s < {MIN_INSPECT_TIME}s)")
-
-                    # ── ERROR: recoverable — resume if zone detected again ────
-                    elif status == "error":
-                        if is_detected:
-                            current_cycle[f"zone_{zone}_status"] = "detecting"
-                            zt[zone]["detect_start"] = now
+                            # Pause tracking, do not reset. Hand is out, wait for it to return
                             zt[zone]["last_seen"] = now
-                            current_cycle["instruction"] = (
-                                f"INSPECTING {cfg['name'].upper()} — KEEP HAND ON PART"
-                            )
-                            current_cycle["instruction_color"] = "blue"
-                            log.info(f"[ZONE] {zone} recovered from error, resuming")
 
                     # done → skip
         except Exception as e:
@@ -1141,13 +1121,13 @@ def _maybe_finalize_cycle():
 
     # If zones have errors, instruct operator to fix
     if any_error and all(s in ("done", "error") for s in zones):
-        current_cycle["instruction"] = "ADJUST PART – ZONES MISSING"
+        current_cycle["instruction"] = "ADJUST PART - ZONES MISSING"
         current_cycle["instruction_color"] = "orange"
         return
 
     # If all zones done but OCR not captured yet, instruct to keep part
     if all_zones_done and not trace_ok:
-        current_cycle["instruction"] = "OCR NOT CAPTURED — KEEP PART FOR SERIAL"
+        current_cycle["instruction"] = "OCR NOT CAPTURED - KEEP PART FOR SERIAL"
         current_cycle["instruction_color"] = "orange"
         return
 
@@ -1161,12 +1141,12 @@ def _maybe_finalize_cycle():
     if serial_bad:
         result = "FAIL"
         current_cycle["fail_cycles"] += 1
-        current_cycle["instruction"] = "REMOVE PART – TRACEABILITY FAILED"
+        current_cycle["instruction"] = "REMOVE PART - TRACEABILITY FAILED"
         current_cycle["instruction_color"] = "red"
     else:
         result = "PASS"
         current_cycle["pass_cycles"] += 1
-        current_cycle["instruction"] = "CYCLE COMPLETE – REMOVE PART"
+        current_cycle["instruction"] = "CYCLE COMPLETE - REMOVE PART"
         current_cycle["instruction_color"] = "green"
 
     current_cycle["total_cycles"] += 1
@@ -1242,11 +1222,11 @@ def _maybe_finalize_cycle():
         )
         log.info(f"[REPORT] Saved to {report_path}")
         # Only instruct operator to NEXT PART after PDF is fully generated
-        current_cycle["instruction"] = "INSPECTION COMPLETE — REMOVE PART AND SCAN NEXT"
+        current_cycle["instruction"] = "INSPECTION COMPLETE - REMOVE PART AND SCAN NEXT"
         current_cycle["instruction_color"] = "green" if result == "PASS" else "red"
     except Exception as e:
         log.error(f"[REPORT] Failed to generate PDF: {e}")
-        current_cycle["instruction"] = "REPORT ERROR — REMOVE PART AND SCAN NEXT"
+        current_cycle["instruction"] = "REPORT ERROR - REMOVE PART AND SCAN NEXT"
         current_cycle["instruction_color"] = "red"
 
     threading.Thread(target=_reset_after_delay, args=(3.5,), daemon=True).start()
@@ -1256,13 +1236,14 @@ def _reset_after_delay(delay=2.5):
     time.sleep(delay)
     with lock:
         for z in ALL_ZONES:
-            current_cycle[f"zone_{z}_status"]   = "idle"
+            current_cycle[f"zone_{z}_status"]   = "waiting_for_zone"
             current_cycle[f"zone_{z}_progress"] = 0
         current_cycle["cycle_result"]      = "idle"
         current_cycle["traceability_done"] = False
         current_cycle["serial"]            = "------"
         current_cycle["serial_date"]       = "------"
-        current_cycle["serial_model"]      = "----"
+        current_cycle["serial_shift"]      = "-"
+        current_cycle["serial_count"]      = "---"
         current_cycle["serial_time"]       = "--:--"
         current_cycle["confidence"]        = "- -"
         current_cycle["serial_finalized"]  = False
@@ -1278,8 +1259,36 @@ def _reset_after_delay(delay=2.5):
         current_cycle.pop("folder_name", None)
         current_cycle["folder_created"] = False
     # Reset OCR voting state for the next cycle
-    if ocr_worker is not None:
-        ocr_worker.reset_voting()
+    global current_ocr_box
+    current_ocr_box = None
+ocr_reset_flag = False
+
+# ── Standalone OCR Process routes ───────────────────────────────────────────────
+@app.route("/latest_ocr_frame")
+def latest_ocr_frame():
+    """Returns the latest unannotated frame as JPEG for the OCR process."""
+    global ind_latest_raw_frame, ocr_reset_flag
+    if ind_latest_raw_frame is None:
+        return jsonify({"status": "error", "message": "No frame available"}), 404
+        
+    _, buf = cv2.imencode(".jpg", ind_latest_raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    response = Response(buf.tobytes(), mimetype='image/jpeg')
+    
+    if ocr_reset_flag:
+        response.headers["X-OCR-Reset"] = "1"
+        ocr_reset_flag = False
+        
+    return response
+
+@app.route("/update_ocr_box", methods=["POST"])
+def update_ocr_box():
+    """Receives the latest YOLO crop box from the OCR process."""
+    global current_ocr_box
+    data = request.get_json(silent=True) or {}
+    box = data.get("box")
+    if box and len(box) == 4:
+        current_ocr_box = box
+    return jsonify({"status": "success"})
 
 # ── Zone Detection routes ─────────────────────────────────────────────────────
 @app.route("/update_zone", methods=["POST"])
@@ -1324,23 +1333,25 @@ def traceability_done_route():
     confidence = data.get("confidence", "- -")
     finalized  = data.get("finalized",  False)
 
-    date_p  = data.get("serial_date")
-    model_p = data.get("serial_model")
-    time_p  = data.get("serial_time")
-    if not date_p or not model_p:
+    date_p   = data.get("serial_date")
+    shift_p  = data.get("serial_shift")
+    count_p  = data.get("serial_count")
+    time_p   = data.get("serial_time")
+    if not date_p or not shift_p or not count_p:
         try:
             from ocr_processor import parse_serial_components
-            date_p, model_p, time_p, full_s = parse_serial_components(serial)
+            date_p, shift_p, count_p, time_p, full_s = parse_serial_components(serial)
             if serial in ("------", "") and full_s != "------":
                 serial = full_s
         except Exception:
-            date_p, model_p, time_p = "------", "----", "--:--"
+            date_p, shift_p, count_p, time_p = "------", "-", "---", "--:--"
 
     with lock:
         current_cycle["traceability_done"] = True
         current_cycle["serial"]            = serial
         current_cycle["serial_date"]       = date_p
-        current_cycle["serial_model"]      = model_p
+        current_cycle["serial_shift"]      = shift_p
+        current_cycle["serial_count"]      = count_p
         current_cycle["serial_time"]       = time_p
         current_cycle["confidence"]        = confidence
         current_cycle["serial_finalized"]  = bool(finalized)
@@ -1361,6 +1372,37 @@ def traceability_done_route():
         _maybe_finalize_cycle()
     return jsonify({"status": "success", "serial": serial, "finalized": finalized})
 
+
+@app.route("/reset_cycle", methods=["POST"])
+def reset_cycle_route():
+    """Manually resets the cycle and clears OCR."""
+    global cycle_count, zt
+    with lock:
+        cycle_count += 1
+        current_cycle.clear()
+        current_cycle["is_processing"] = True
+        current_cycle["status"] = "Cycle Reset"
+        current_cycle["cycle_number"] = cycle_count
+        current_cycle["ocr_phase"] = "completed" if ZONE_CONFIG.get("disable_ocr", False) else "scanning"
+        
+        # Reset zone trackers
+        for z in ALL_ZONES:
+            zt[z] = {
+                "status": "pending",
+                "accumulated": 0.0,
+                "detect_start": 0.0,
+                "capture_start": 0.0,
+                "last_seen": 0.0
+            }
+            current_cycle[f"zone_{z}_status"] = "pending"
+            current_cycle[f"zone_{z}_progress"] = 0
+            
+    # Reset OCR box mapping and tell standalone process to reset
+    global current_ocr_box, ocr_reset_flag
+    current_ocr_box = None
+    ocr_reset_flag = True
+            
+    return jsonify({"status": "success", "message": "Cycle manually reset"})
 
 # ── Status ────────────────────────────────────────────────────────────────────
 @app.route("/status")

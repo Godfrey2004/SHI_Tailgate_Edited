@@ -1,11 +1,11 @@
 import cv2
 import threading
-import queue
 import time
 import requests
 import logging
 import re
 import os
+import yaml
 import numpy as np
 from collections import Counter
 from datetime import datetime
@@ -19,43 +19,93 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [OCR] %(message)s")
 log = logging.getLogger("OCR")
 
+# ── Load config.yaml ──────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_cfg = {}
+try:
+    with open(os.path.join(BASE_DIR, "config.yaml"), "r") as f:
+        _cfg = yaml.safe_load(f) or {}
+    log.info("Loaded config.yaml for OCR settings.")
+except Exception as e:
+    log.warning(f"Could not load config.yaml, using defaults: {e}")
+
+_ocr_cfg = _cfg.get("ocr", {})
+
+# ── OCR tuning parameters (all from config.yaml) ──────────────────────────────
+OCR_VOTE_WINDOW     = int(_ocr_cfg.get("vote_window",    4))
+OCR_VOTE_THRESHOLD  = int(_ocr_cfg.get("vote_threshold", 2))
+
+# Image filter flags
+OCR_ZOOM_FACTOR          = int(_ocr_cfg.get("zoom_factor",       2))
+OCR_CLAHE_ENABLED        = bool(_ocr_cfg.get("clahe_enabled",    True))
+OCR_CLAHE_CLIP           = float(_ocr_cfg.get("clahe_clip_limit", 3.0))
+OCR_CLAHE_TILE           = int(_ocr_cfg.get("clahe_tile_size",    8))
+OCR_MEDIAN_BLUR_ENABLED  = bool(_ocr_cfg.get("median_blur_enabled", True))
+OCR_MEDIAN_BLUR_KSIZE    = int(_ocr_cfg.get("median_blur_ksize",    3))
+OCR_OTSU_ENABLED         = bool(_ocr_cfg.get("otsu_enabled",        True))
+OCR_MORPH_CLOSE_ENABLED  = bool(_ocr_cfg.get("morph_close_enabled", True))
+OCR_MORPH_CLOSE_KSIZE    = int(_ocr_cfg.get("morph_close_ksize",    2))
+OCR_SHARPEN_ENABLED      = bool(_ocr_cfg.get("sharpen_enabled",     True))
+OCR_AUTO_ROTATE_ENABLED  = bool(_ocr_cfg.get("auto_rotate_enabled", True))
+
+log.info(f"OCR Config: vote_window={OCR_VOTE_WINDOW}, vote_threshold={OCR_VOTE_THRESHOLD}, "
+         f"zoom={OCR_ZOOM_FACTOR}x, clahe={OCR_CLAHE_ENABLED}, blur={OCR_MEDIAN_BLUR_ENABLED}, "
+         f"otsu={OCR_OTSU_ENABLED}, morph={OCR_MORPH_CLOSE_ENABLED}, "
+         f"sharpen={OCR_SHARPEN_ENABLED}, auto_rotate={OCR_AUTO_ROTATE_ENABLED}")
+
 def parse_serial_components(raw_text):
     """
-    Split serial text into Date, Model, Time, and Full serial.
-    Expected format: 14 chars -> Date (6, DDMMYY) + Model (4) + Time (4, HHMM)
-    e.g. '170926 A 065 09:47' or '170926A0650947'
-    Returns: (date_str, model_str, time_str, full_clean_str)
+    Split serial text into Date, Shift, Count, Time, and Full serial.
+    Expected format: 14 chars -> Date (6 digits) + Shift (1 letter) + Count (3 digits) + Time (4 digits)
+    Returns: (date_str, shift_str, count_str, time_str, full_clean_str)
     """
     if not raw_text or raw_text in ("------", ""):
-        return "------", "----", "--:--", "------"
+        return "------", "-", "---", "--:--", "------"
 
+    # Strip all non-alphanumeric just to have a clean base
     clean = re.sub(r'[^A-Za-z0-9]', '', raw_text)
+    
+    # We will pad it to 14 chars with spaces if it's too short just to avoid index errors
+    clean_padded = clean.ljust(14, ' ')
 
-    # 1. Match spaced/colon format: e.g. "170926 A 065 09:47"
-    m = re.search(r'(\d{6})\s*([A-Za-z]\s*\d{3})\s*(\d{2})[:.]?(\d{2})', raw_text)
-    if m:
-        date_p = m.group(1)
-        model_p = re.sub(r'\s+', '', m.group(2)).upper()
-        time_p = f"{m.group(3)}:{m.group(4)}"
-        full_s = f"{date_p}{model_p}{m.group(3)}{m.group(4)}"
-        return date_p, model_p, time_p, full_s
-
-    # 2. Exactly 14 alphanumeric chars: 6 Date + 4 Model + 4 Time
-    if len(clean) == 14:
-        date_p = clean[:6]
-        model_p = clean[6:10].upper()
-        time_p = f"{clean[10:12]}:{clean[12:14]}"
-        return date_p, model_p, time_p, clean
-
-    # 3. Partial reads (10 to 13 chars)
-    if len(clean) >= 10:
-        date_p = clean[:6]
-        model_p = clean[6:10].upper()
-        rem = clean[10:]
-        time_p = f"{rem[:2]}:{rem[2:]}" if len(rem) == 4 else rem
-        return date_p, model_p, time_p, clean
-
-    return clean, "----", "--:--", clean
+    # 1. Date (first 6 chars) -> Must be 6 digits. Fallback to system date if not.
+    raw_date = clean_padded[:6]
+    date_p = re.sub(r'[^0-9]', '', raw_date)
+    if len(date_p) < 6:
+        date_p = datetime.now().strftime("%d%m%y")
+    else:
+        date_p = date_p[:6]
+        
+    # 2. Shift (7th char) -> Must be A, B, or C
+    raw_shift = clean_padded[6].upper()
+    shift_map = {'8': 'B', 'V': 'A', 'U': 'A', '0': 'C', 'O': 'C'}
+    if raw_shift in shift_map:
+        shift_p = shift_map[raw_shift]
+    elif raw_shift in ('A', 'B', 'C'):
+        shift_p = raw_shift
+    else:
+        shift_p = '-'
+        
+    # 3. Count (8th to 10th chars) -> Must be 3 digits
+    raw_count = clean_padded[7:10]
+    count_p = re.sub(r'[^0-9]', '', raw_count)
+    if len(count_p) == 0:
+        count_p = "---"
+    else:
+        count_p = count_p.zfill(3)[:3]
+    
+    # 4. Time (11th to 14th chars) -> Must be 4 digits
+    raw_time = clean_padded[10:14]
+    time_digits = re.sub(r'[^0-9]', '', raw_time)
+    if len(time_digits) >= 4:
+        time_p = f"{time_digits[:2]}:{time_digits[2:4]}"
+    elif len(time_digits) > 0:
+        time_p = time_digits
+    else:
+        time_p = "--:--"
+        
+    full_s = f"{date_p}{shift_p}{count_p}{time_digits[:4]}"
+    return date_p, shift_p, count_p, time_p, full_s
 
 def score_serial_candidate(text, conf):
     """
@@ -80,50 +130,48 @@ def score_serial_candidate(text, conf):
 # ── Image Processing Filters ─────────────────────────────────────────────────
 def preprocess_for_ocr(crop_img):
     """
-    Apply a pipeline of image processing techniques to maximize OCR accuracy:
-      1. Resize (2x zoom) for better character resolution
-      2. Convert to grayscale
-      3. CLAHE (Contrast Limited Adaptive Histogram Equalization) for local contrast
-      4. Bilateral filter to remove noise while preserving edges
-      5. Otsu thresholding for binarization
-      6. Morphological close to fill small gaps in characters
-    Returns: processed image (grayscale, uint8)
+    Configurable preprocessing pipeline (controlled via config.yaml).
+    Only the enabled filters run — disable any via config to save time.
     """
     if crop_img is None or crop_img.size == 0:
         return crop_img
 
-    # 1. Zoom: upscale 2x with cubic interpolation for sub-pixel detail
+    # 1. Zoom: upscale for better character resolution (ESSENTIAL)
     h, w = crop_img.shape[:2]
-    zoomed = cv2.resize(crop_img, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+    zoomed = cv2.resize(crop_img, (w * OCR_ZOOM_FACTOR, h * OCR_ZOOM_FACTOR), interpolation=cv2.INTER_CUBIC)
 
-    # 2. Grayscale
-    if len(zoomed.shape) == 3:
-        gray = cv2.cvtColor(zoomed, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = zoomed.copy()
+    # 2. Grayscale (always required)
+    gray = cv2.cvtColor(zoomed, cv2.COLOR_BGR2GRAY) if len(zoomed.shape) == 3 else zoomed.copy()
 
-    # 3. CLAHE – adaptive contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
+    # 3. CLAHE - adaptive contrast (config: clahe_enabled)
+    if OCR_CLAHE_ENABLED:
+        clahe = cv2.createCLAHE(clipLimit=OCR_CLAHE_CLIP, tileGridSize=(OCR_CLAHE_TILE, OCR_CLAHE_TILE))
+        gray = clahe.apply(gray)
+    # else: skip CLAHE (faster, use if image already has good contrast)
 
-    # 4. Median blur – fast noise reduction while preserving edges
-    denoised = cv2.medianBlur(enhanced, 3)
+    # 4. Median blur - noise reduction (config: median_blur_enabled)
+    if OCR_MEDIAN_BLUR_ENABLED:
+        gray = cv2.medianBlur(gray, OCR_MEDIAN_BLUR_KSIZE)
+    # else: skip blur (faster, use if camera image is already clean)
 
-    # 5. Otsu threshold – automatic binarization
-    _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # 5. Otsu binarization - black/white conversion (config: otsu_enabled)
+    if OCR_OTSU_ENABLED:
+        _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # else: pass grayscale directly (may help on some image types)
 
-    # 6. Morphological close – fill tiny gaps in character strokes
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    # 6. Morphological close - fill broken character strokes (config: morph_close_enabled)
+    if OCR_MORPH_CLOSE_ENABLED:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (OCR_MORPH_CLOSE_KSIZE, OCR_MORPH_CLOSE_KSIZE))
+        gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+    # else: skip morph (faster, use if characters are already complete strokes)
 
-    return cleaned
+    return gray
 
 
 def sharpen_image(img):
-    """Apply an unsharp mask for additional sharpening before OCR."""
+    """Unsharp mask sharpening (config: sharpen_enabled)."""
     gaussian = cv2.GaussianBlur(img, (0, 0), 3)
-    sharpened = cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
-    return sharpened
+    return cv2.addWeighted(img, 1.5, gaussian, -0.5, 0)
 
 
 # ── Crop Saving Helper (Removed) ──────────────────────────────────────────────
@@ -131,25 +179,19 @@ def sharpen_image(img):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class TailgateOCR(threading.Thread):
+class TailgateOCR:
     def __init__(self, endpoint_url="http://127.0.0.1:5000/traceability_done",
-                 vote_threshold=2, vote_window=3):
+                 vote_threshold=None, vote_window=None):
         """
-        Initializes the OCR thread with voting mechanism.
-        
-        Args:
-            endpoint_url: Flask endpoint to report finalized serial
-            vote_threshold: minimum identical readings to finalize (default: 2 out of 3)
-            vote_window: number of recent readings to consider (default: 3)
+        Initializes the OCR standalone process.
+        vote_threshold and vote_window default to config.yaml values.
         """
-        super().__init__(daemon=True)
         self.endpoint_url = endpoint_url
-        self.frame_queue = queue.Queue(maxsize=1)
         self.running = True
         
-        # ── Voting state ──────────────────────────────────────────────────────
-        self.vote_threshold = vote_threshold
-        self.vote_window = vote_window
+        # Voting state — read from config.yaml by default
+        self.vote_threshold = vote_threshold if vote_threshold is not None else OCR_VOTE_THRESHOLD
+        self.vote_window    = vote_window    if vote_window    is not None else OCR_VOTE_WINDOW
         self.recent_readings = []       # list of (serial_text, confidence) tuples
         self.finalized_serial = None    # once locked, stops OCR until reset
         self.has_reported = False       # ensures finalized serial is reported only once per cycle
@@ -163,33 +205,32 @@ class TailgateOCR(threading.Thread):
             from ultralytics import YOLO
             from paddleocr import PaddleOCR
             
-            model_path = os.path.join(BASE_DIR, "Models", "SHI_SERIAL_V3.pt")
+            model_path = os.path.join(BASE_DIR, "Models", "serial", "best.pt")
             log.info(f"Initializing YOLO ({model_path}) for OCR region detection...")
             self.yolo_model = YOLO(model_path)
             
             log.info("Initializing PaddleOCR (Running on CPU to prevent CUDA DLL conflicts with YOLO)...")
-            self.ocr = PaddleOCR(lang='en')
+            self.ocr = PaddleOCR(lang='en', use_angle_cls=True)
             log.info("AI Models loaded successfully.")
         except Exception as e:
-            log.error(f"Failed to initialize OCR models: {e}")
+            import traceback
+            log.error(f"Failed to initialize OCR models: {e}\n{traceback.format_exc()}")
             self.ocr = None
             self.yolo_model = None
+        self.latest_box = None
 
-    def process_frame(self, frame):
-        """
-        Non-blocking function to add a frame to the processing queue.
-        If the queue is full (OCR is currently busy), the frame is dropped to prevent getting stuck.
-        Call this from your main camera loop.
-        """
-        # If serial is already finalized for this cycle, skip entirely
-        with self._vote_lock:
-            if self.finalized_serial is not None:
-                return
+    def fetch_latest_frame(self):
+        """Fetches the latest unannotated frame from the Flask server."""
         try:
-            # We copy the frame so the camera thread can reuse the original buffer if needed
-            self.frame_queue.put_nowait(frame.copy())
-        except queue.Full:
-            pass # Drop frame to avoid blocking the camera feed
+            resp = requests.get("http://127.0.0.1:5000/latest_ocr_frame", timeout=1.0)
+            if resp.status_code == 200:
+                if resp.headers.get("X-OCR-Reset") == "1":
+                    self.reset_voting()
+                img_array = np.frombuffer(resp.content, dtype=np.uint8)
+                return cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        except requests.exceptions.RequestException:
+            pass
+        return None
 
     def reset_voting(self):
         """Reset voting state for a new cycle (called when cycle resets)."""
@@ -201,20 +242,20 @@ class TailgateOCR(threading.Thread):
             log.info("[VOTE] Voting state reset for new cycle.")
 
     def run(self):
-        log.info("Tailgate OCR Thread Started (with voting + image processing). Waiting for frames...")
+        log.info("Tailgate OCR Standalone Process Started. Polling for frames...")
         while self.running:
-            try:
-                # Wait for a frame with a timeout so we can gracefully exit if running = False
-                frame = self.frame_queue.get(timeout=1.0)
-            except queue.Empty:
+            frame = self.fetch_latest_frame()
+            if frame is None:
+                time.sleep(0.1)
                 continue
 
             try:
                 self.perform_ocr(frame)
             except Exception as e:
                 log.error(f"Error during OCR processing: {e}")
-            finally:
-                self.frame_queue.task_done()
+            
+            # Throttle slightly to not hammer the server if OCR finishes very quickly
+            time.sleep(0.05)
 
     def perform_ocr(self, frame):
         """
@@ -237,7 +278,7 @@ class TailgateOCR(threading.Thread):
 
         # ── Step 1: YOLO detection to locate serial number region ─────────────
         try:
-            results = self.yolo_model(frame, verbose=False)
+            results = self.yolo_model(frame, conf=0.15, verbose=False)
         except Exception as e:
             log.error(f"YOLO inference error: {e}")
             return
@@ -245,15 +286,23 @@ class TailgateOCR(threading.Thread):
         # Check if there are any detections
         if len(results) == 0 or len(results[0].boxes) == 0:
             # If YOLO doesn't detect anything, return to prevent false positives
+            self.latest_box = None
             return
 
         # Get the box with the highest confidence
         box = results[0].boxes[0].xyxy[0].cpu().numpy().astype(int)
         x1, y1, x2, y2 = box
+        self.latest_box = (x1, y1, x2, y2)
+        
+        # POST the box coordinates back to the main app so it can draw the green rectangle
+        try:
+            requests.post("http://127.0.0.1:5000/update_ocr_box", json={"box": [int(x1), int(y1), int(x2), int(y2)]}, timeout=0.5)
+        except requests.exceptions.RequestException:
+            pass
         
         # Add padding around detected region for better OCR context
         h, w = frame.shape[:2]
-        pad = 15  # slightly more padding than before for zoom
+        pad = 15  # Reverted back to 15 to avoid background noise
         y1 = max(0, y1 - pad)
         y2 = min(h, y2 + pad)
         x1 = max(0, x1 - pad)
@@ -264,20 +313,30 @@ class TailgateOCR(threading.Thread):
         if crop_frame.size == 0:
             return
 
-        # ── Step 2: Image preprocessing pipeline ─────────────────────────────
-        # First sharpen the raw crop for better edge definition
-        sharpened_crop = sharpen_image(crop_frame)
-        
-        # Then run full preprocessing (zoom, CLAHE, bilateral, Otsu, morphology)
-        processed = preprocess_for_ocr(sharpened_crop)
+        # Save original crop to send to the UI (so UI doesn't look rotated)
+        ui_crop = crop_frame.copy()
 
-        # ── Step 3: Run PaddleOCR on BOTH raw crop and processed version ─────
-        # We run ONLY on the processed image for maximum speed and accuracy
+        # ── Step 2: Image Preprocessing pipeline ─────────────────────────────
+        # Auto-rotate if crop is vertical (config: auto_rotate_enabled)
+        ch, cw = crop_frame.shape[:2]
+        if OCR_AUTO_ROTATE_ENABLED and ch > cw * 1.2:
+            crop_frame = cv2.rotate(crop_frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            
+        # Sharpen before preprocessing (config: sharpen_enabled)
+        if OCR_SHARPEN_ENABLED:
+            crop_frame = sharpen_image(crop_frame)
+        # else: skip sharpening (use if camera is already crisp)
+        
+        # Run the configurable preprocessing pipeline
+        processed = preprocess_for_ocr(crop_frame)
+
+        # ── Step 3: Run PaddleOCR ────────────────────────────────────────────
         best_text = ""
         best_conf = 0.0
         best_score = -1.0
         
         try:
+            # Disable angle classifier (cls=False) for faster speed since we pre-rotated
             result = self.ocr.ocr(processed, cls=False)
         except Exception as e:
             log.warning(f"OCR failed on processed image: {e}")
@@ -353,14 +412,15 @@ class TailgateOCR(threading.Thread):
                 confidence_str = f"{final_conf*100:.1f}%"
         
                 # Report with finalized=true flag so UI turns green, and send the clean frame
-                self.report_traceability(serial_to_report, confidence_str, finalized=True, crop_frame=crop_frame)
+                self.report_traceability(serial_to_report, confidence_str, finalized=True, crop_frame=ui_crop)
 
     def report_traceability(self, serial, confidence, finalized=False, crop_frame=None):
-        date_p, model_p, time_p, full_s = parse_serial_components(serial)
+        date_p, shift_p, count_p, time_p, full_s = parse_serial_components(serial)
         payload = {
             "serial": full_s if full_s != "------" else serial,
             "serial_date": date_p,
-            "serial_model": model_p,
+            "serial_shift": shift_p,
+            "serial_count": count_p,
             "serial_time": time_p,
             "confidence": confidence,
             "finalized": finalized
@@ -385,22 +445,15 @@ class TailgateOCR(threading.Thread):
 
     def stop(self):
         self.running = False
-        self.join()
 
-# --- Example Usage / Testing ---
+# --- Standalone Execution ---
 if __name__ == "__main__":
-    ocr_worker = TailgateOCR()
-    ocr_worker.start()
+    # Ensure working directory is correct so models can be found
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
-    log.info("Simulating camera feed...")
+    ocr_worker = TailgateOCR()
     try:
-        while True:
-            dummy_frame = np.ones((480, 640, 3), dtype=np.uint8) * 255
-            cv2.putText(dummy_frame, "SHI-88942", (100, 240), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 0), 3)
-            
-            ocr_worker.process_frame(dummy_frame)
-            time.sleep(0.1) 
+        ocr_worker.run()
     except KeyboardInterrupt:
-        log.info("Stopping...")
+        log.info("Stopping Standalone OCR Engine...")
         ocr_worker.stop()
