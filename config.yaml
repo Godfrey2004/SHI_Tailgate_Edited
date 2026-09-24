@@ -6,14 +6,18 @@ confidence_thresholds:
   seq_outerzone2: 0.50
 
 timings:
-  capture_delay_inner1: 2.0
-  capture_delay_inner2: 2.0
-  capture_delay_outer1: 7.0
-  capture_delay_outer2: 2.0
-  inspect_time_inner1: 10.0
-  inspect_time_inner2: 5.0
-  inspect_time_outer1: 5.0
-  inspect_time_outer2: 10.0
+  capture_delay_inner1: 0.5
+  capture_delay_inner2: 0.5
+  capture_delay_outer1: 0.5
+  capture_delay_outer2: 0.5
+  inspect_time_inner1: 2.0
+  inspect_time_inner2: 2.0
+  inspect_time_outer1: 2.0
+  inspect_time_outer2: 2.0
+
+camera:
+  industrial:
+    exposure: 9600
 
 banners:
   waiting: "WAITING FOR {zone_name}"
@@ -44,7 +48,7 @@ ocr:
   zoom_factor: 2
 
   # CLAHE: Boosts local contrast for faint laser-etched text on dark metal. ESSENTIAL.
-  clahe_enabled: true
+  clahe_enabled: false
   clahe_clip_limit: 3.0
   clahe_tile_size: 8
 
@@ -53,11 +57,11 @@ ocr:
   median_blur_ksize: 3
 
   # Otsu Binarization: Converts to pure black/white for character clarity. ESSENTIAL.
-  otsu_enabled: true
+  otsu_enabled: false
 
   # Morphological Close: Fills gaps in broken character strokes. Optional.
   # Disable if serial text is clean and well-lit (saves a tiny bit of time).
-  morph_close_enabled: true
+  morph_close_enabled: false
   morph_close_ksize: 2
 
   # Sharpen (Unsharp Mask): Sharpens blurry edges before preprocessing. Optional.

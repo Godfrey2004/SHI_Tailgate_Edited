@@ -99,6 +99,8 @@ def get_banner(key, default, **kwargs):
 
 lock = threading.RLock()
 cycle_count = 1
+zt = None
+ocr_reset_flag = False
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 current_cycle = {
@@ -528,7 +530,12 @@ atexit.register(cam.disconnect)
 ocr_process = None
 try:
     log.info("Starting standalone OCR process in background...")
-    ocr_process = subprocess.Popen([sys.executable, "ocr_processor.py"])
+    ocr_log_file = open(os.path.join(BASE_DIR, "logs", "ocr.log"), "a")
+    ocr_process = subprocess.Popen(
+        [sys.executable, "ocr_processor.py"],
+        stdout=ocr_log_file,
+        stderr=subprocess.STDOUT
+    )
     
     def cleanup_ocr_process():
         if ocr_process:
@@ -754,9 +761,16 @@ def connect_gige():
     if cam.is_connected:
         return jsonify({"status": "success", "message": "Already connected"})
     data = request.get_json(silent=True) or {}
+    
+    # Load default exposure from config if not provided
+    exposure = data.get("exposure")
+    if exposure is None:
+        load_config()
+        exposure = _cached_config.get("camera", {}).get("industrial", {}).get("exposure")
+
     ok   = cam.connect(
         index        = int(data.get("index", 0)),
-        exposure     = data.get("exposure"),
+        exposure     = exposure,
         gain         = data.get("gain"),
         gamma        = data.get("gamma"),
         pixel_format = data.get("pixel_format"),
@@ -874,7 +888,7 @@ def _save_image_to_disk(name, img_data):
         return None
     try:
         final_dir, folder_name = _get_or_create_cycle_dir()
-        img_path = os.path.join(final_dir, f"{folder_name}_{name}.jpg")
+        img_path = os.path.join(final_dir, f"{folder_name}_{name}.png")
         if isinstance(img_data, bytes):
             with open(img_path, "wb") as f:
                 f.write(img_data)
@@ -904,9 +918,11 @@ def zone_inference_loop():
     OCR runs in parallel on the industrial camera. If all zones done but OCR
     not finalized → "KEEP PART FOR SERIAL CAPTURE".
     """
-    # Per-zone timing state (NOT stored in current_cycle, local to this thread)
-    zt = {z: {"detect_start": None, "last_seen": 0.0, "capture_start": None,
-              "accumulated": 0.0} for z in ALL_ZONES}
+    # Per-zone timing state
+    global zt
+    if 'zt' not in globals() or zt is None:
+        zt = {z: {"detect_start": None, "last_seen": 0.0, "capture_start": None,
+                  "accumulated": 0.0} for z in ALL_ZONES}
 
     while True:
         if zone_model is None or current_cycle.get("cycle_result") in ("PASS", "FAIL"):
@@ -981,7 +997,7 @@ def zone_inference_loop():
                 if ocr_phase != "completed":
                     if ocr_phase == "scanning":
                         elapsed = now - current_cycle.get("ocr_scan_start_time", now)
-                        if elapsed > 20.0:
+                        if elapsed > 15.0:
                             current_cycle["ocr_phase"] = "failed"
                             current_cycle["ocr_fail_time"] = now
                             current_cycle["instruction"] = "SERIAL CAPTURE FAILED SHOW THE PART AGAIN"
@@ -1042,7 +1058,9 @@ def zone_inference_loop():
                         else:
                             # capture window complete -> Check if hand is in frame
                             is_hand_detected = any(seg["name"].lower() == "hand" for seg in segs_to_save)
-                            if is_hand_detected:
+                            
+                            # Bypass the hand check completely for Inner Zone 1
+                            if is_hand_detected and zone != "inner1":
                                 zt[zone]["capture_start"] = now
                                 current_cycle["instruction"] = get_banner("hand_detected", "HAND DETECTED! PLEASE REMOVE HAND")
                                 current_cycle["instruction_color"] = "red"
@@ -1051,7 +1069,7 @@ def zone_inference_loop():
                                 with cp_frame_lock:
                                     raw_to_save = cp_latest_frame.copy() if cp_latest_frame is not None else frame.copy()
 
-                                _, clean_buf = cv2.imencode(".jpg", raw_to_save, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                                _, clean_buf = cv2.imencode(".png", raw_to_save)
                                 clean_jpeg = clean_buf.tobytes()
                                 current_cycle.setdefault("zone_images", {})[zone] = clean_jpeg
                                 log.info(f"[ZONE] {zone} CAPTURED clean frame")
@@ -1117,7 +1135,7 @@ def _maybe_finalize_cycle():
     zones = [current_cycle[f"zone_{z}_status"] for z in ALL_ZONES]
     all_zones_done = all(s == "done" for s in zones)
     any_error = any(s == "error" for s in zones)
-    trace_ok = current_cycle.get("traceability_done", False)
+    trace_ok = current_cycle.get("serial_finalized", False)
 
     # If zones have errors, instruct operator to fix
     if any_error and all(s in ("done", "error") for s in zones):
@@ -1153,7 +1171,8 @@ def _maybe_finalize_cycle():
     current_cycle["cycle_result"]  = result
 
     try:
-        num = int(current_cycle["cycle_number"].lstrip("#")) + 1
+        cn = str(current_cycle["cycle_number"])
+        num = int(cn.lstrip("#")) + 1
     except ValueError:
         num = 1
     current_cycle["cycle_number"] = f"#{num:03d}"
@@ -1184,7 +1203,7 @@ def _maybe_finalize_cycle():
     # Ensure all zone images and ocr crop are written to disk
     saved_images = {}
     for zone in ALL_ZONES:
-        img_path = os.path.join(final_dir, f"{folder_name}_{zone}.jpg")
+        img_path = os.path.join(final_dir, f"{folder_name}_{zone}.png")
         if not os.path.exists(img_path):
             img_data = current_cycle.get("zone_images", {}).get(zone)
             if img_data is not None:
@@ -1197,7 +1216,7 @@ def _maybe_finalize_cycle():
             saved_images[zone] = img_path
             log.info(f"[IMAGE] Confirmed {zone} → {img_path}")
 
-    crop_path = os.path.join(final_dir, f"{folder_name}_ocr.jpg")
+    crop_path = os.path.join(final_dir, f"{folder_name}_ocr.png")
     if not os.path.exists(crop_path) and current_cycle.get("ocr_raw_crop"):
         with open(crop_path, "wb") as f:
             f.write(current_cycle["ocr_raw_crop"])
@@ -1259,9 +1278,9 @@ def _reset_after_delay(delay=2.5):
         current_cycle.pop("folder_name", None)
         current_cycle["folder_created"] = False
     # Reset OCR voting state for the next cycle
-    global current_ocr_box
+    global current_ocr_box, ocr_reset_flag
     current_ocr_box = None
-ocr_reset_flag = False
+    ocr_reset_flag = True
 
 # ── Standalone OCR Process routes ───────────────────────────────────────────────
 @app.route("/latest_ocr_frame")
@@ -1358,6 +1377,8 @@ def traceability_done_route():
         
         # If finalized, extract the crop and update banner
         if finalized:
+            global current_ocr_box
+            current_ocr_box = None
             if "raw_crop_base64" in data:
                 import base64
                 img_data = base64.b64decode(data["raw_crop_base64"])
@@ -1376,29 +1397,46 @@ def traceability_done_route():
 @app.route("/reset_cycle", methods=["POST"])
 def reset_cycle_route():
     """Manually resets the cycle and clears OCR."""
-    global cycle_count, zt
+    global cycle_count, zt, ocr_reset_flag, current_ocr_box
     with lock:
         cycle_count += 1
-        current_cycle.clear()
+        
+        for z in ALL_ZONES:
+            current_cycle[f"zone_{z}_status"]   = "waiting_for_zone"
+            current_cycle[f"zone_{z}_progress"] = 0
+            if zt:
+                zt[z] = {
+                    "status": "pending",
+                    "accumulated": 0.0,
+                    "detect_start": 0.0,
+                    "capture_start": 0.0,
+                    "last_seen": 0.0
+                }
+                
         current_cycle["is_processing"] = True
         current_cycle["status"] = "Cycle Reset"
-        current_cycle["cycle_number"] = cycle_count
-        current_cycle["ocr_phase"] = "completed" if ZONE_CONFIG.get("disable_ocr", False) else "scanning"
-        
-        # Reset zone trackers
-        for z in ALL_ZONES:
-            zt[z] = {
-                "status": "pending",
-                "accumulated": 0.0,
-                "detect_start": 0.0,
-                "capture_start": 0.0,
-                "last_seen": 0.0
-            }
-            current_cycle[f"zone_{z}_status"] = "pending"
-            current_cycle[f"zone_{z}_progress"] = 0
+        current_cycle["cycle_number"] = f"#{cycle_count:03d}"
+        current_cycle["cycle_result"]      = "idle"
+        current_cycle["traceability_done"] = False
+        current_cycle["serial"]            = "------"
+        current_cycle["serial_date"]       = "------"
+        current_cycle["serial_shift"]      = "-"
+        current_cycle["serial_count"]      = "---"
+        current_cycle["serial_time"]       = "--:--"
+        current_cycle["confidence"]        = "- -"
+        current_cycle["serial_finalized"]  = False
+        current_cycle["ocr_phase"]         = "scanning"
+        current_cycle["ocr_scan_start_time"] = time.time()
+        current_cycle["holes_count"]       = 0
+        current_cycle["defects"]           = []
+        current_cycle["instruction"]       = "SHOW PART FOR SERIAL"
+        current_cycle["instruction_color"] = "orange"
+        current_cycle.pop("ocr_raw_crop", None)
+        current_cycle.pop("final_dir", None)
+        current_cycle.pop("folder_name", None)
+        current_cycle["folder_created"] = False
             
     # Reset OCR box mapping and tell standalone process to reset
-    global current_ocr_box, ocr_reset_flag
     current_ocr_box = None
     ocr_reset_flag = True
             

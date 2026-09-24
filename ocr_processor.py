@@ -165,7 +165,9 @@ def preprocess_for_ocr(crop_img):
         gray = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
     # else: skip morph (faster, use if characters are already complete strokes)
 
-    return gray
+    # Convert back to 3-channel BGR because PaddleOCR expects 3 channels
+    final_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    return final_img
 
 
 def sharpen_image(img):
@@ -398,21 +400,38 @@ class TailgateOCR:
                     log.info(f"[VOTE] No consensus yet. Best: '{most_common_serial}' "
                              f"({count}/{self.vote_threshold} needed)")
 
-        # ── Step 5: (Removed Disk Saving) ────────────────────────────────────
-        # No local disk saving here to prevent duplicates.
+        # ── Step 5: (Disk Saving for Debugging) ────────────────────────────────────
+        debug_dir = os.path.join(BASE_DIR, "debug_crops")
+        os.makedirs(debug_dir, exist_ok=True)
+        if not hasattr(self, "crop_save_count"):
+            self.crop_save_count = 0
+            
+        if self.crop_save_count < 10:  # Save up to 10 crops
+            self.crop_save_count += 1
+            safe_text = re.sub(r'[^A-Za-z0-9]', '', best_text) if best_text else "FAILED"
+            crop_path = os.path.join(debug_dir, f"crop_{self.crop_save_count}_{safe_text}.jpg")
+            try:
+                cv2.imwrite(crop_path, processed)
+                log.info(f"Saved debug crop to {crop_path}")
+            except Exception as e:
+                log.warning(f"Failed to save debug crop: {e}")
 
-
-        # ── Step 6: Report finalized serial to the main app ──────────────────
+        # ── Step 6: Report serial to the main app ──────────────────
         with self._vote_lock:
-            if self.finalized_serial is not None and not self.has_reported:
-                self.has_reported = True
-                serial_to_report = self.finalized_serial
-                matching_confs = [r[1] for r in self.recent_readings if r[0] == serial_to_report]
-                final_conf = sum(matching_confs) / len(matching_confs) if matching_confs else best_conf
-                confidence_str = f"{final_conf*100:.1f}%"
-        
-                # Report with finalized=true flag so UI turns green, and send the clean frame
-                self.report_traceability(serial_to_report, confidence_str, finalized=True, crop_frame=ui_crop)
+            if self.finalized_serial is not None:
+                if not self.has_reported:
+                    self.has_reported = True
+                    serial_to_report = self.finalized_serial
+                    matching_confs = [r[1] for r in self.recent_readings if r[0] == serial_to_report]
+                    final_conf = sum(matching_confs) / len(matching_confs) if matching_confs else best_conf
+                    confidence_str = f"{final_conf*100:.1f}%"
+            
+                    # Report with finalized=true flag so UI turns green, and send the clean frame
+                    self.report_traceability(serial_to_report, confidence_str, finalized=True, crop_frame=ui_crop)
+            else:
+                # Report unfinalized (live) result to the UI so it shows capturing in real-time
+                confidence_str = f"{best_conf*100:.1f}%"
+                self.report_traceability(best_text, confidence_str, finalized=False, crop_frame=ui_crop)
 
     def report_traceability(self, serial, confidence, finalized=False, crop_frame=None):
         date_p, shift_p, count_p, time_p, full_s = parse_serial_components(serial)
@@ -428,7 +447,7 @@ class TailgateOCR:
         if crop_frame is not None:
             try:
                 import base64
-                _, buffer = cv2.imencode('.jpg', crop_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                _, buffer = cv2.imencode('.png', crop_frame)
                 payload["raw_crop_base64"] = base64.b64encode(buffer).decode('utf-8')
             except Exception as e:
                 log.warning(f"Failed to encode raw crop frame: {e}")
