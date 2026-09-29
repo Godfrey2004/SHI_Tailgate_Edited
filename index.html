@@ -790,34 +790,6 @@
             line-height: 1.2;
         }
 
-        .zone-progress-track {
-            width: 100%;
-            height: 5px;
-            background: var(--bg-card);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-
-        .zone-progress-fill {
-            height: 100%;
-            width: 0%;
-            border-radius: 3px;
-            background: var(--accent-green);
-            transition: width 0.4s ease, background 0.3s;
-        }
-
-        #zone-inner1.detecting .zone-progress-fill { background: #3b82f6; } /* Blue */
-        #zone-inner2.detecting .zone-progress-fill { background: #8b5cf6; } /* Purple */
-        #zone-outer1.detecting .zone-progress-fill { background: #f59e0b; } /* Orange */
-        #zone-outer2.detecting .zone-progress-fill { background: #ec4899; } /* Pink */
-
-        .zone-card.done .zone-progress-fill {
-            background: var(--accent-green) !important;
-        }
-
-        .zone-card.error .zone-progress-fill {
-            background: var(--accent-red) !important;
-        }
 
         /* Cycle banner strip */
         .cycle-strip {
@@ -844,22 +816,26 @@
             color: var(--accent-blue);
         }
 
-        /* ── Zone done state ────────────────────────────── */
+        /* ── Zone done state — immediate green flash when photo captured ────── */
         .zone-card.done {
             border-color: var(--accent-green);
-            background: rgba(16, 185, 129, 0.05);
-            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.12);
+            background: rgba(16, 185, 129, 0.08);
+            box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18), 0 0 20px rgba(16, 185, 129, 0.12);
+            animation: zone-done-glow 1.5s ease-out;
         }
         .zone-card.done .zone-rect {
             border-color: var(--accent-green);
-            background: rgba(16, 185, 129, 0.35);
+            background: rgba(16, 185, 129, 0.4);
         }
         .zone-card.done .zone-status-badge {
-            background: rgba(16, 185, 129, 0.13);
+            background: rgba(16, 185, 129, 0.18);
             color: var(--accent-green);
+            font-size: 9px;
         }
-        .zone-card.done .zone-progress-fill {
-            background: var(--accent-green);
+        @keyframes zone-done-glow {
+            0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.8), 0 0 40px rgba(16,185,129,0.6); background: rgba(16,185,129,0.22); }
+            60%  { box-shadow: 0 0 0 16px rgba(16,185,129,0), 0 0 40px rgba(16,185,129,0); }
+            100% { box-shadow: 0 0 0 3px rgba(16,185,129,0.18), 0 0 20px rgba(16,185,129,0.12); background: rgba(16,185,129,0.08); }
         }
 
         /* ── Zone adjusting / capturing / ready_to_inspect state (amber) ─────────── */
@@ -1233,9 +1209,6 @@
                             <span class="zone-status-badge" id="zone-inner1-badge">IDLE</span>
                         </div>
                         <div class="zone-name" style="font-size: 12px;">Inner Zone 1</div>
-                        <div class="zone-progress-track">
-                            <div class="zone-progress-fill" id="zone-inner1-fill"></div>
-                        </div>
                     </div>
                     <!-- Inner Zone 2 -->
                     <div class="zone-card" id="zone-inner2" style="justify-content: space-between;">
@@ -1244,9 +1217,6 @@
                             <span class="zone-status-badge" id="zone-inner2-badge">IDLE</span>
                         </div>
                         <div class="zone-name" style="font-size: 12px;">Inner Zone 2</div>
-                        <div class="zone-progress-track">
-                            <div class="zone-progress-fill" id="zone-inner2-fill"></div>
-                        </div>
                     </div>
                     <!-- Outer Zone 1 -->
                     <div class="zone-card" id="zone-outer1" style="justify-content: space-between;">
@@ -1255,9 +1225,6 @@
                             <span class="zone-status-badge" id="zone-outer1-badge">IDLE</span>
                         </div>
                         <div class="zone-name" style="font-size: 12px;">Outer Zone 1</div>
-                        <div class="zone-progress-track">
-                            <div class="zone-progress-fill" id="zone-outer1-fill"></div>
-                        </div>
                     </div>
                     <!-- Outer Zone 2 -->
                     <div class="zone-card" id="zone-outer2" style="justify-content: space-between;">
@@ -1266,9 +1233,6 @@
                             <span class="zone-status-badge" id="zone-outer2-badge">IDLE</span>
                         </div>
                         <div class="zone-name" style="font-size: 12px;">Outer Zone 2</div>
-                        <div class="zone-progress-track">
-                            <div class="zone-progress-fill" id="zone-outer2-fill"></div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -2138,43 +2102,27 @@
                 zoneKeys.forEach(z => {
                     const card  = document.getElementById('zone-' + z.id);
                     const badge = document.getElementById('zone-' + z.id + '-badge');
-                    const fill  = document.getElementById('zone-' + z.id + '-fill');
                     if (!card) return;
 
-                    const status   = (data[z.statusKey]   || 'idle').toLowerCase();
-                    const progress = data[z.progressKey]  || 0;
+                    const status = (data[z.statusKey] || 'idle').toLowerCase();
 
+                    // Remove all state classes
                     card.classList.remove('detecting', 'done', 'error', 'adjusting', 'ready_to_inspect', 'capturing');
 
-                    if (status === 'detecting') {
-                        card.classList.add('detecting');
-                        badge.textContent = 'INSPECTING';
-                        fill.style.width  = Math.min(progress, 100) + '%';
-                    } else if (status === 'adjusting') {
-                        card.classList.add('adjusting');
-                        badge.textContent = '⏱ ADJUST PART';
-                        fill.style.width  = '100%';
-                    } else if (status === 'capturing') {
+                    if (status === 'capturing') {
                         card.classList.add('capturing');
-                        badge.textContent = '📸 CAPTURING';
-                        fill.style.width  = '100%';
-                    } else if (status === 'ready_to_inspect') {
-                        card.classList.add('ready_to_inspect');
-                        badge.textContent = '📸 CAPTURED';
-                        fill.style.width  = '100%';
+                        badge.textContent = '\u23f3 CAPTURING...';
                     } else if (status === 'done') {
+                        // Immediately green when photo is saved
                         card.classList.add('done');
-                        badge.textContent = '✓ CAPTURED';
-                        fill.style.width  = '100%';
+                        badge.textContent = '\u2714 CAPTURED';
                     } else if (status === 'error') {
                         card.classList.add('error');
-                        badge.textContent = '⚠ HAND MISSING';
-                        fill.style.width  = Math.min(progress, 100) + '%';
+                        badge.textContent = '\u26a0 REPOSITION';
                     } else {
+                        // waiting_for_zone or idle
                         badge.textContent = 'IDLE';
-                        fill.style.width  = '0%';
                     }
-
                 });
 
                 // ── Operator Instruction Banner ──────────────────────────

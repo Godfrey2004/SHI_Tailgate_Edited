@@ -125,9 +125,6 @@ current_cycle = {
     "step3_status"    : "Pending",
     "instruction"     : "WAITING FOR PART",
     "instruction_color": "blue",
-    # ── Zone Detection ──────────────────────────────────────────────────────
-    # status: "waiting_for_zone" | "capturing" | "ready_to_inspect" | "detecting" | "done"
-    # progress: 0-100
     "zone_inner1_status"  : "waiting_for_zone",
     "zone_inner1_progress": 0,
     "zone_inner2_status"  : "waiting_for_zone",
@@ -144,6 +141,10 @@ current_cycle = {
     "fail_cycles"      : 0,
     "traceability_done": False,
     "zone_images"      : {}, # Stores the path or frame for each zone
+    # ── Empty Table Detection ───────────────────────────────────
+    # Tracks when no zone class (except hand) is seen during a running cycle
+    "empty_table_first_seen": None,  # time.time() when emptiness first detected
+    "auto_finishing"         : False, # True while auto-finish is in progress
 }
 
 # ── CP Plus (RTSP) stream ─────────────────────────────────────────────────────
@@ -855,7 +856,12 @@ def _get_next_pending_zone():
 
 
 def _get_or_create_cycle_dir():
-    """Returns (final_dir, folder_name) for the active cycle, creating the folder on disk."""
+    """Returns (final_dir, folder_name) for the active cycle, creating the folder on disk.
+    
+    Folder naming rules:
+    - Serial captured : <serial_number>
+    - No serial       : <HHmmss>_no_serial
+    """
     if "final_dir" in current_cycle and current_cycle["final_dir"]:
         return current_cycle["final_dir"], current_cycle.get("folder_name", "temp")
     
@@ -863,10 +869,13 @@ def _get_or_create_cycle_dir():
     day_dir = os.path.join(DATA_DIR, today_str)
     os.makedirs(day_dir, exist_ok=True)
     
-    serial_str = current_cycle.get("serial", "temp")
+    serial_str = current_cycle.get("serial", "")
     if serial_str in ("------", "", None):
-        serial_str = "temp"
-    folder_name = serial_str
+        # No serial: use timestamp + no_serial tag
+        timestamp_str = datetime.now().strftime("%H%M%S")
+        folder_name = f"{timestamp_str}_no_serial"
+    else:
+        folder_name = serial_str
     
     final_dir = os.path.join(day_dir, folder_name)
     if os.path.exists(final_dir) and not current_cycle.get("folder_created"):
@@ -904,19 +913,16 @@ def _save_image_to_disk(name, img_data):
 def zone_inference_loop():
     """
     Production zone inference loop.
-    
-    Zone state machine per zone:
-      idle → detecting (time-based progress, 12s) → ready_to_capture →(2s delay)→ done
-    
-    - detecting:  operator's hand is on the part, progress fills over inspect_time.
-                  If zone disappears for >1.5s → error (hand removed too early).
-    - ready_to_capture: inspection complete. Instruct "REMOVE HAND FOR CAPTURE".
-                        After CAPTURE_DELAY seconds → capture clean frame → done.
-    - error:      recoverable - if zone detected again, resumes detecting.
-    - done:       zone captured. Show instruction for next zone.
-    
-    OCR runs in parallel on the industrial camera. If all zones done but OCR
-    not finalized → "KEEP PART FOR SERIAL CAPTURE".
+
+    Simplified zone state machine per zone:
+      waiting_for_zone → capturing (hold for capture_delay with hand-check) → done (green)
+
+    - capturing: Zone detected, countdown begins. If zone lost → back to waiting.
+                 After capture_delay, hand check (except inner1). Photo saved → done.
+    - done:      Photo captured, zone card turns green immediately.
+
+    OCR (serial) runs fully in parallel on the industrial camera.
+    Cycle finalizes when ALL zones done AND serial finalized (any order).
     """
     # Per-zone timing state
     global zt
@@ -990,27 +996,39 @@ def zone_inference_loop():
 
             now = time.time()
 
+            # ── Empty Table Detection ──────────────────────────────────────
+            # Empty = no zone classes detected (hand is ignored — always excluded)
+            has_zone_class = detected_zone is not None
+            with lock:
+                cycle_is_running   = current_cycle.get("cycle_result") == "running"
+                is_auto_finishing  = current_cycle.get("auto_finishing", False)
+                serial_ok          = current_cycle.get("serial_finalized", False)
+                all_zones_done_chk = all(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES)
+
+            if cycle_is_running and not is_auto_finishing and not (all_zones_done_chk and serial_ok):
+                if not has_zone_class:
+                    # Table is empty — start/continue the empty-table timer
+                    with lock:
+                        if current_cycle.get("empty_table_first_seen") is None:
+                            current_cycle["empty_table_first_seen"] = now
+                        elapsed_empty = now - current_cycle["empty_table_first_seen"]
+                    empty_timeout = get_timing("empty_table_timeout", 1.0)
+                    if elapsed_empty >= empty_timeout:
+                        log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no detections — triggering auto-finish")
+                        threading.Thread(target=_force_finalize_no_serial, daemon=True).start()
+                else:
+                    # Something detected — reset empty-table timer
+                    with lock:
+                        current_cycle["empty_table_first_seen"] = None
+            else:
+                with lock:
+                    current_cycle["empty_table_first_seen"] = None
+
             # ── Update each zone's state machine ─────────────────────────────
             with lock:
-                # ── BLOCK ZONES UNTIL OCR COMPLETED ──
-                ocr_phase = current_cycle.get("ocr_phase", "completed")
-                if ocr_phase != "completed":
-                    if ocr_phase == "scanning":
-                        elapsed = now - current_cycle.get("ocr_scan_start_time", now)
-                        if elapsed > 15.0:
-                            current_cycle["ocr_phase"] = "failed"
-                            current_cycle["ocr_fail_time"] = now
-                            current_cycle["instruction"] = "SERIAL CAPTURE FAILED SHOW THE PART AGAIN"
-                            current_cycle["instruction_color"] = "red"
-                    elif ocr_phase == "failed":
-                        elapsed = now - current_cycle.get("ocr_fail_time", now)
-                        if elapsed > 3.0:
-                            # Retry
-                            current_cycle["ocr_phase"] = "scanning"
-                            current_cycle["ocr_scan_start_time"] = now
-                            current_cycle["instruction"] = "SHOW PART FOR SERIAL"
-                            current_cycle["instruction_color"] = "orange"
-                    continue # Skip zone logic entirely until OCR is done!
+                # OCR runs fully in parallel — no blocking of zone logic.
+                # Zones and serial detection happen simultaneously.
+                # Cycle only finalizes when BOTH all zones done AND serial finalized.
 
                 expected_zone = _get_next_pending_zone()
 
@@ -1033,7 +1051,6 @@ def zone_inference_loop():
                                 current_cycle["instruction_color"] = "orange"
                             elif detected_zone is not None and detected_zone in ALL_ZONES and detected_zone != expected_zone:
                                 # Detected an OUT OF SEQUENCE zone!
-                                wrong_zone_cfg = ZONE_CONFIG.get(detected_zone)
                                 current_cycle["instruction"] = get_banner("wrong_zone", f"WRONG ZONE DETECTED: PLEASE ROTATE TO {cfg['name'].upper()}", zone_name=cfg['name'].upper())
                                 current_cycle["instruction_color"] = "red"
                             else:
@@ -1048,7 +1065,7 @@ def zone_inference_loop():
 
                         if remaining > 0:
                             if not is_detected:
-                                # They moved it too early during steady hold
+                                # Zone lost too early — reset
                                 current_cycle[f"zone_{zone}_status"] = "waiting_for_zone"
                                 current_cycle["instruction"] = get_banner("lost_zone", f"LOST {cfg['name'].upper()} - PLEASE REPOSITION", zone_name=cfg['name'].upper())
                                 current_cycle["instruction_color"] = "red"
@@ -1056,71 +1073,38 @@ def zone_inference_loop():
                                 current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({remaining:.1f}s)", time=f"{remaining:.1f}")
                                 current_cycle["instruction_color"] = "orange"
                         else:
-                            # capture window complete -> Check if hand is in frame
+                            # Capture window complete → check for hand in frame
                             is_hand_detected = any(seg["name"].lower() == "hand" for seg in segs_to_save)
-                            
-                            # Bypass the hand check completely for Inner Zone 1
+
+                            # Bypass hand check for Inner Zone 1 (serial label area)
                             if is_hand_detected and zone != "inner1":
                                 zt[zone]["capture_start"] = now
                                 current_cycle["instruction"] = get_banner("hand_detected", "HAND DETECTED! PLEASE REMOVE HAND")
                                 current_cycle["instruction_color"] = "red"
                             else:
-                                # Safe to capture -> Grab the full frame
+                                # ── CAPTURE PHOTO ──
                                 with cp_frame_lock:
                                     raw_to_save = cp_latest_frame.copy() if cp_latest_frame is not None else frame.copy()
 
                                 _, clean_buf = cv2.imencode(".png", raw_to_save)
                                 clean_jpeg = clean_buf.tobytes()
                                 current_cycle.setdefault("zone_images", {})[zone] = clean_jpeg
-                                log.info(f"[ZONE] {zone} CAPTURED clean frame")
-                                
+                                log.info(f"[ZONE] {zone} CAPTURED clean frame → done (green)")
                                 _save_image_to_disk(zone, clean_jpeg)
 
-                                current_cycle[f"zone_{zone}_status"] = "ready_to_inspect"
-                                zt[zone]["last_seen"] = now
-                                current_cycle["instruction"] = get_banner("photo_captured", "PHOTO CAPTURED - START INSPECTION (PLACE HAND)")
-                                current_cycle["instruction_color"] = "green"
-
-                    # ── READY_TO_INSPECT: waiting for operator hand ───────
-                    elif status == "ready_to_inspect":
-                        if is_detected:
-                            current_cycle[f"zone_{zone}_status"] = "detecting"
-                            zt[zone]["detect_start"] = now
-                            zt[zone]["last_seen"] = now
-                            zt[zone]["accumulated"] = 0.0
-                            current_cycle["instruction"] = get_banner("inspecting", f"INSPECTING {cfg['name'].upper()} - KEEP HAND ON PART", zone_name=cfg['name'].upper())
-                            current_cycle["instruction_color"] = "blue"
-
-                    # ── DETECTING: hand on part, accumulate inspect_time ───
-                    elif status == "detecting":
-                        if is_detected:
-                            elapsed_since_last = now - zt[zone]["last_seen"]
-                            zt[zone]["accumulated"] += elapsed_since_last
-                            zt[zone]["last_seen"] = now
-
-                            inspect_time = get_timing(f"inspect_time_{zone}", cfg["inspect_time"])
-                            progress = min(100, int((zt[zone]["accumulated"] / inspect_time) * 100))
-                            current_cycle[f"zone_{zone}_progress"] = progress
-
-                            if progress >= 100:
+                                # ── Photo saved → immediately go green (done) ──
                                 current_cycle[f"zone_{zone}_status"] = "done"
                                 current_cycle[f"zone_{zone}_progress"] = 100
-                                log.info(f"[ZONE] {zone} full inspection complete ({zt[zone]['accumulated']:.1f}s)")
-                                
+
                                 nxt = _get_next_pending_zone()
                                 if nxt:
-                                    pass
+                                    current_cycle["instruction"] = get_banner("waiting", f"PHOTO SAVED! NOW SHOW {ZONE_CONFIG[nxt]['name'].upper()}", zone_name=ZONE_CONFIG[nxt]['name'].upper())
+                                    current_cycle["instruction_color"] = "green"
                                 else:
                                     if not current_cycle.get("serial_finalized"):
-                                        current_cycle["instruction"] = "OCR NOT CAPTURED - KEEP PART FOR SERIAL"
+                                        current_cycle["instruction"] = "ALL ZONES CAPTURED - WAITING FOR SERIAL"
                                         current_cycle["instruction_color"] = "orange"
                                 _maybe_finalize_cycle()
-                            else:
-                                current_cycle["instruction"] = get_banner("inspecting", f"INSPECTING {cfg['name'].upper()} - KEEP HAND ON PART", zone_name=cfg['name'].upper())
-                                current_cycle["instruction_color"] = "blue"
-                        else:
-                            # Pause tracking, do not reset. Hand is out, wait for it to return
-                            zt[zone]["last_seen"] = now
 
                     # done → skip
         except Exception as e:
@@ -1130,8 +1114,132 @@ def zone_inference_loop():
 
 threading.Thread(target=zone_inference_loop, daemon=True).start()
 
+
+def _force_finalize_no_serial():
+    """
+    Force-finalise the current cycle when the table becomes empty (operator
+    removed the part without showing serial). Called from a background thread.
+
+    - Saves whatever zone images were already captured.
+    - Generates a PDF report marked FAIL with serial = NO_SERIAL.
+    - Resets for the next cycle.
+    """
+    with lock:
+        # Guard: only act if we're still in a running cycle that hasn't finished
+        if current_cycle.get("cycle_result") in ("PASS", "FAIL"):
+            return
+        if current_cycle.get("auto_finishing"):
+            return
+        # Only trigger if cycle was actually active (at least one zone captured)
+        any_zone_done = any(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES)
+        if not any_zone_done and current_cycle.get("cycle_result") != "running":
+            return
+
+        current_cycle["auto_finishing"] = True
+        current_cycle["instruction"] = "EMPTY TABLE DETECTED — AUTO SAVING CYCLE"
+        current_cycle["instruction_color"] = "orange"
+
+    log.info("[EMPTY TABLE] Operator removed part — auto-finalising cycle without serial.")
+    time.sleep(0.4)  # brief pause so UI shows the message
+
+    with lock:
+        # Mark all un-captured zones as skipped (leave captured ones as 'done')
+        for z in ALL_ZONES:
+            if current_cycle[f"zone_{z}_status"] != "done":
+                current_cycle[f"zone_{z}_status"] = "waiting_for_zone"  # leave idle, not error
+
+        # Treat serial as absent
+        current_cycle["serial_finalized"] = True  # force finalization path
+        if current_cycle["serial"] in ("------", "", None):
+            current_cycle["serial"] = "NO_SERIAL"
+
+        result = "FAIL"
+        current_cycle["fail_cycles"] += 1
+        current_cycle["total_cycles"] += 1
+        current_cycle["cycle_result"]  = result
+
+        try:
+            cn = str(current_cycle["cycle_number"])
+            num = int(cn.lstrip("#")) + 1
+        except ValueError:
+            num = 1
+        current_cycle["cycle_number"] = f"#{num:03d}"
+
+        log.info(f"[CYCLE] Auto-finalised (no serial/empty table) → FAIL  "
+                 f"(total={current_cycle['total_cycles']}  "
+                 f"pass={current_cycle['pass_cycles']}  "
+                 f"fail={current_cycle['fail_cycles']})")
+
+        # ── File saving & PDF ──
+        today_str  = datetime.now().strftime("%Y-%m-%d")
+        time_str   = datetime.now().strftime("%H:%M:%S")
+
+        # Force folder name to timestamp_no_serial NOW (before serial is overwritten)
+        if not current_cycle.get("folder_created"):
+            timestamp_str = datetime.now().strftime("%H%M%S")
+            day_dir = os.path.join(DATA_DIR, today_str)
+            os.makedirs(day_dir, exist_ok=True)
+            folder_name = f"{timestamp_str}_no_serial"
+            final_dir   = os.path.join(day_dir, folder_name)
+            os.makedirs(final_dir, exist_ok=True)
+            current_cycle["final_dir"]      = final_dir
+            current_cycle["folder_name"]    = folder_name
+            current_cycle["folder_created"] = True
+        else:
+            final_dir, folder_name = _get_or_create_cycle_dir()
+
+        final_dir   = current_cycle["final_dir"]
+        folder_name = current_cycle["folder_name"]
+
+        # Confirm/write any zone images that were captured
+        saved_images = {}
+        for zone in ALL_ZONES:
+            img_path = os.path.join(final_dir, f"{folder_name}_{zone}.png")
+            if not os.path.exists(img_path):
+                img_data = current_cycle.get("zone_images", {}).get(zone)
+                if img_data is not None:
+                    try:
+                        if isinstance(img_data, bytes):
+                            with open(img_path, "wb") as f:
+                                f.write(img_data)
+                        elif isinstance(img_data, np.ndarray):
+                            cv2.imwrite(img_path, img_data)
+                    except Exception as e:
+                        log.error(f"[EMPTY TABLE] Failed to save {zone}: {e}")
+            if os.path.exists(img_path):
+                saved_images[zone] = img_path
+                log.info(f"[IMAGE] Confirmed {zone} → {img_path}")
+
+        # Generate PDF report
+        report_path = os.path.join(final_dir, f"{folder_name}.pdf")
+        current_cycle["instruction"] = "CYCLE AUTO-SAVED (NO SERIAL) - NEXT PART"
+        current_cycle["instruction_color"] = "red"
+
+    # PDF generation outside the lock
+    try:
+        create_inspection_report(
+            serial_number="NO SERIAL",
+            status="FAIL",
+            date_str=today_str,
+            time_str=time_str,
+            zone_images=saved_images,
+            ocr_serial="NO SERIAL",
+            confidence=None,
+            defects=["Serial not captured — part removed from table"],
+            output_path=report_path
+        )
+        log.info(f"[REPORT] No-serial report saved → {report_path}")
+    except Exception as e:
+        log.error(f"[REPORT] Failed to generate no-serial PDF: {e}")
+
+    threading.Thread(target=_reset_after_delay, args=(2.0,), daemon=True).start()
+
 def _maybe_finalize_cycle():
     """Called under lock. Finalises cycle when all zones + traceability done."""
+    # Guard: Do not finalize if already finished or currently auto-finishing
+    if current_cycle.get("cycle_result") in ("PASS", "FAIL") or current_cycle.get("auto_finishing"):
+        return
+
     zones = [current_cycle[f"zone_{z}_status"] for z in ALL_ZONES]
     all_zones_done = all(s == "done" for s in zones)
     any_error = any(s == "error" for s in zones)
@@ -1266,17 +1374,19 @@ def _reset_after_delay(delay=2.5):
         current_cycle["serial_time"]       = "--:--"
         current_cycle["confidence"]        = "- -"
         current_cycle["serial_finalized"]  = False
-        current_cycle["ocr_phase"]         = "scanning"
+        current_cycle["ocr_phase"]         = "scanning"  # tells OCR process to start scanning
         current_cycle["ocr_scan_start_time"] = time.time()
         current_cycle["holes_count"]       = 0
         current_cycle["defects"]           = []
-        current_cycle["instruction"]       = "SHOW PART FOR SERIAL"
-        current_cycle["instruction_color"] = "orange"
+        current_cycle["instruction"]       = "WAITING FOR PART"
+        current_cycle["instruction_color"] = "blue"
         current_cycle["zone_images"]       = {}
         current_cycle.pop("ocr_raw_crop", None)
         current_cycle.pop("final_dir", None)
         current_cycle.pop("folder_name", None)
-        current_cycle["folder_created"] = False
+        current_cycle["folder_created"]          = False
+        current_cycle["empty_table_first_seen"]  = None
+        current_cycle["auto_finishing"]          = False
     # Reset OCR voting state for the next cycle
     global current_ocr_box, ocr_reset_flag
     current_ocr_box = None
@@ -1384,10 +1494,21 @@ def traceability_done_route():
                 img_data = base64.b64decode(data["raw_crop_base64"])
                 current_cycle["ocr_raw_crop"] = img_data
                 _save_image_to_disk("ocr", img_data)
-                
+
             current_cycle["ocr_phase"] = "completed"
-            current_cycle["instruction"] = "START INSPECTION"
-            current_cycle["instruction_color"] = "blue"
+            # Check if all zones are already done (serial came LAST)
+            all_zones_done = all(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES)
+            if all_zones_done:
+                # Both serial and zones complete — finalize will be called below
+                pass
+            else:
+                # Serial came FIRST — zones still pending
+                nxt = _get_next_pending_zone()
+                if nxt:
+                    current_cycle["instruction"] = f"SERIAL LOCKED \u2713 - NOW SHOW {ZONE_CONFIG[nxt]['name'].upper()}"
+                else:
+                    current_cycle["instruction"] = "SERIAL LOCKED \u2713 - START ZONE INSPECTION"
+                current_cycle["instruction_color"] = "green"
 
         current_cycle["cycle_result"]      = current_cycle.get("cycle_result") or "running"
         _maybe_finalize_cycle()
@@ -1429,12 +1550,14 @@ def reset_cycle_route():
         current_cycle["ocr_scan_start_time"] = time.time()
         current_cycle["holes_count"]       = 0
         current_cycle["defects"]           = []
-        current_cycle["instruction"]       = "SHOW PART FOR SERIAL"
-        current_cycle["instruction_color"] = "orange"
+        current_cycle["instruction"]       = "WAITING FOR PART"
+        current_cycle["instruction_color"] = "blue"
         current_cycle.pop("ocr_raw_crop", None)
         current_cycle.pop("final_dir", None)
         current_cycle.pop("folder_name", None)
-        current_cycle["folder_created"] = False
+        current_cycle["folder_created"]         = False
+        current_cycle["empty_table_first_seen"] = None
+        current_cycle["auto_finishing"]         = False
             
     # Reset OCR box mapping and tell standalone process to reset
     current_ocr_box = None

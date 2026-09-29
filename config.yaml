@@ -14,6 +14,10 @@ timings:
   inspect_time_inner2: 2.0
   inspect_time_outer1: 2.0
   inspect_time_outer2: 2.0
+  # Empty table timeout: if no zone class (except hand) is detected for this many
+  # seconds while a cycle is running, auto-finalize the cycle without waiting for serial.
+  # Images already captured are saved; report is generated with NO_SERIAL label.
+  empty_table_timeout: 1.0
 
 camera:
   industrial:
