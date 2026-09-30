@@ -769,8 +769,31 @@ def connect_gige():
         load_config()
         exposure = _cached_config.get("camera", {}).get("industrial", {}).get("exposure")
 
+    target_index = int(data.get("index", 0))
+    
+    # ── ENFORCE SPECIFIC CAMERA ──
+    available_cams = cam.scan_cameras()
+    found_target = False
+    
+    # First, check if the UI's selected index is indeed the correct camera model
+    for c in available_cams:
+        if c["id"] == target_index and ("UA5MEAGV" in c["model"] or "UA5MEAGV" in c["display_name"]):
+            found_target = True
+            break
+            
+    # If the UI's index wasn't correct, auto-search for the correct camera
+    if not found_target:
+        for c in available_cams:
+            if "UA5MEAGV" in c["model"] or "UA5MEAGV" in c["display_name"]:
+                target_index = c["id"]
+                found_target = True
+                break
+            
+    if not found_target and len(available_cams) > 0:
+        return jsonify({"status": "error", "message": "Camera UA5MEAGV-50M not found. Discovered other cameras but blocked connection to prevent mismatch."}), 400
+
     ok   = cam.connect(
-        index        = int(data.get("index", 0)),
+        index        = target_index,
         exposure     = exposure,
         gain         = data.get("gain"),
         gamma        = data.get("gamma"),
@@ -863,7 +886,37 @@ def _get_or_create_cycle_dir():
     - No serial       : <HHmmss>_no_serial
     """
     if "final_dir" in current_cycle and current_cycle["final_dir"]:
-        return current_cycle["final_dir"], current_cycle.get("folder_name", "temp")
+        serial_str = current_cycle.get("serial", "")
+        has_real_serial = serial_str not in ("------", "", None, "NO_SERIAL")
+        current_folder = current_cycle.get("folder_name", "temp")
+        
+        if has_real_serial and current_folder.endswith("_no_serial"):
+            old_dir = current_cycle["final_dir"]
+            # Clean serial string for folder name
+            safe_serial = "".join(c for c in serial_str if c.isalnum() or c in (' ', '-', '_')).strip()
+            new_folder = safe_serial
+            new_dir = os.path.join(os.path.dirname(old_dir), new_folder)
+            
+            if os.path.exists(new_dir):
+                timestamp_str = datetime.now().strftime("%H%M%S")
+                new_folder = f"{new_folder}_{timestamp_str}"
+                new_dir = os.path.join(os.path.dirname(old_dir), new_folder)
+                
+            try:
+                os.rename(old_dir, new_dir)
+                for fname in os.listdir(new_dir):
+                    if fname.startswith(current_folder):
+                        new_fname = fname.replace(current_folder, new_folder, 1)
+                        os.rename(os.path.join(new_dir, fname), os.path.join(new_dir, new_fname))
+                
+                current_cycle["final_dir"] = new_dir
+                current_cycle["folder_name"] = new_folder
+                log.info(f"[STORAGE] Renamed cycle directory to include serial: {new_dir}")
+                return new_dir, new_folder
+            except Exception as e:
+                log.error(f"[STORAGE] Failed to rename directory: {e}")
+
+        return current_cycle["final_dir"], current_folder
     
     today_str = datetime.now().strftime("%Y-%m-%d")
     day_dir = os.path.join(DATA_DIR, today_str)
@@ -1000,22 +1053,35 @@ def zone_inference_loop():
             # Empty = no zone classes detected (hand is ignored — always excluded)
             has_zone_class = detected_zone is not None
             with lock:
-                cycle_is_running   = current_cycle.get("cycle_result") == "running"
+                cycle_result       = current_cycle.get("cycle_result")
+                cycle_is_running   = (cycle_result == "running")
+                cycle_is_finished  = (cycle_result in ("PASS", "FAIL"))
                 is_auto_finishing  = current_cycle.get("auto_finishing", False)
                 serial_ok          = current_cycle.get("serial_finalized", False)
                 all_zones_done_chk = all(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES)
 
-            if cycle_is_running and not is_auto_finishing and not (all_zones_done_chk and serial_ok):
+            # Evaluate empty table if cycle is running or finished
+            if (cycle_is_running and not is_auto_finishing and not (all_zones_done_chk and serial_ok)) or cycle_is_finished:
+                with lock:
+                    has_progress = any(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES) or (current_cycle.get("serial") not in ("------", "", None))
+                
                 if not has_zone_class:
-                    # Table is empty — start/continue the empty-table timer
                     with lock:
                         if current_cycle.get("empty_table_first_seen") is None:
                             current_cycle["empty_table_first_seen"] = now
                         elapsed_empty = now - current_cycle["empty_table_first_seen"]
-                    empty_timeout = get_timing("empty_table_timeout", 1.0)
+                    
+                    empty_timeout = get_timing("empty_table_timeout", 3.0)
                     if elapsed_empty >= empty_timeout:
-                        log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no detections — triggering auto-finish")
-                        threading.Thread(target=_force_finalize_no_serial, daemon=True).start()
+                        if cycle_is_finished:
+                            log.info(f"[EMPTY TABLE] Part removed after completion — resetting cycle")
+                            threading.Thread(target=_silent_reset_cycle, daemon=True).start()
+                        elif has_progress:
+                            log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no detections — triggering auto-finish")
+                            threading.Thread(target=_force_finalize_no_serial, daemon=True).start()
+                        else:
+                            log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no progress — resetting silently (break time)")
+                            threading.Thread(target=_silent_reset_cycle, daemon=True).start()
                 else:
                     # Something detected — reset empty-table timer
                     with lock:
@@ -1037,25 +1103,28 @@ def zone_inference_loop():
                     is_detected = (detected_zone == zone)
                     cfg = ZONE_CONFIG[zone]
 
-                    # ── WAITING_FOR_ZONE: operator-paced sequence enforcement ───────
+                    # ── WAITING_FOR_ZONE: order-independent capture ───────
                     if status == "waiting_for_zone":
-                        if zone == expected_zone:
-                            if is_detected:
-                                # The expected zone is presented, begin capture!
-                                current_cycle[f"zone_{zone}_status"] = "capturing"
-                                zt[zone]["capture_start"] = now
-                                if current_cycle["cycle_result"] == "idle":
-                                    current_cycle["cycle_result"] = "running"
-                                capture_delay = get_timing(f"capture_delay_{zone}", 2.0)
-                                current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({capture_delay:.1f}s)", time=f"{capture_delay:.1f}")
-                                current_cycle["instruction_color"] = "orange"
-                            elif detected_zone is not None and detected_zone in ALL_ZONES and detected_zone != expected_zone:
-                                # Detected an OUT OF SEQUENCE zone!
-                                current_cycle["instruction"] = get_banner("wrong_zone", f"WRONG ZONE DETECTED: PLEASE ROTATE TO {cfg['name'].upper()}", zone_name=cfg['name'].upper())
-                                current_cycle["instruction_color"] = "red"
-                            else:
-                                current_cycle["instruction"] = get_banner("waiting", f"WAITING FOR {cfg['name'].upper()}", zone_name=cfg['name'].upper())
+                        if is_detected:
+                            # A pending zone is presented, begin capture!
+                            current_cycle[f"zone_{zone}_status"] = "capturing"
+                            zt[zone]["capture_start"] = now
+                            zt[zone]["reference_xyxy"] = detected_zone_xyxy
+                            if current_cycle["cycle_result"] == "idle":
+                                current_cycle["cycle_result"] = "running"
+                            capture_delay = get_timing(f"capture_delay_{zone}", 2.0)
+                            current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({capture_delay:.1f}s)", time=f"{capture_delay:.1f}")
+                            current_cycle["instruction_color"] = "orange"
+                        elif zone == expected_zone and not any(current_cycle[f"zone_{z}_status"] == "capturing" for z in ALL_ZONES):
+                            # Only update the waiting instruction if no other zone is currently capturing
+                            if detected_zone is not None and detected_zone in ALL_ZONES and current_cycle[f"zone_{detected_zone}_status"] == "done":
+                                # Showing a zone that is already done
+                                current_cycle["instruction"] = "ALREADY CAPTURED - SHOW NEXT ZONE"
                                 current_cycle["instruction_color"] = "blue"
+                            else:
+                                current_cycle["instruction"] = get_banner("waiting", "WAITING FOR ANY ZONE", zone_name="ANY ZONE")
+                                current_cycle["instruction_color"] = "blue"
+
 
                     # ── CAPTURING: steady capture window ──────────
                     elif status == "capturing":
@@ -1070,13 +1139,31 @@ def zone_inference_loop():
                                 current_cycle["instruction"] = get_banner("lost_zone", f"LOST {cfg['name'].upper()} - PLEASE REPOSITION", zone_name=cfg['name'].upper())
                                 current_cycle["instruction_color"] = "red"
                             else:
+                                # Stability Check: ensure part is not rotating or moving
+                                ref_box = zt[zone].get("reference_xyxy")
+                                current_box = detected_zone_xyxy
+                                if ref_box and current_box:
+                                    cx1, cy1 = (ref_box[0]+ref_box[2])/2, (ref_box[1]+ref_box[3])/2
+                                    cx2, cy2 = (current_box[0]+current_box[2])/2, (current_box[1]+current_box[3])/2
+                                    dist = ((cx2-cx1)**2 + (cy2-cy1)**2)**0.5
+                                    
+                                    area1 = (ref_box[2]-ref_box[0]) * (ref_box[3]-ref_box[1])
+                                    area2 = (current_box[2]-current_box[0]) * (current_box[3]-current_box[1])
+                                    area_diff = abs(area1 - area2) / max(area1, 1)
+                                    
+                                    # If part moves > 80 pixels or area changes > 15%, it's unstable
+                                    if dist > 80 or area_diff > 0.15:
+                                        zt[zone]["capture_start"] = now
+                                        zt[zone]["reference_xyxy"] = current_box
+                                        elapsed = 0
+                                        remaining = capture_delay
+                                
                                 current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({remaining:.1f}s)", time=f"{remaining:.1f}")
                                 current_cycle["instruction_color"] = "orange"
                         else:
                             # Capture window complete → check for hand in frame
                             is_hand_detected = any(seg["name"].lower() == "hand" for seg in segs_to_save)
 
-                            # Bypass hand check for Inner Zone 1 (serial label area)
                             if is_hand_detected and zone != "inner1":
                                 zt[zone]["capture_start"] = now
                                 current_cycle["instruction"] = get_banner("hand_detected", "HAND DETECTED! PLEASE REMOVE HAND")
@@ -1098,7 +1185,7 @@ def zone_inference_loop():
 
                                 nxt = _get_next_pending_zone()
                                 if nxt:
-                                    current_cycle["instruction"] = get_banner("waiting", f"PHOTO SAVED! NOW SHOW {ZONE_CONFIG[nxt]['name'].upper()}", zone_name=ZONE_CONFIG[nxt]['name'].upper())
+                                    current_cycle["instruction"] = "PHOTO SAVED! WAITING FOR NEXT ZONE"
                                     current_cycle["instruction_color"] = "green"
                                 else:
                                     if not current_cycle.get("serial_finalized"):
@@ -1114,6 +1201,47 @@ def zone_inference_loop():
 
 threading.Thread(target=zone_inference_loop, daemon=True).start()
 
+def _silent_reset_cycle():
+    """Silently resets the cycle without saving anything (used for false starts/break time)."""
+    with lock:
+        for z in ALL_ZONES:
+            current_cycle[f"zone_{z}_status"]   = "waiting_for_zone"
+            current_cycle[f"zone_{z}_progress"] = 0
+            if zt:
+                zt[z] = {
+                    "status": "pending",
+                    "accumulated": 0.0,
+                    "detect_start": 0.0,
+                    "capture_start": 0.0,
+                    "last_seen": 0.0
+                }
+        current_cycle["cycle_result"]      = "idle"
+        current_cycle["traceability_done"] = False
+        current_cycle["serial"]            = "------"
+        current_cycle["serial_date"]       = "------"
+        current_cycle["serial_shift"]      = "-"
+        current_cycle["serial_count"]      = "---"
+        current_cycle["serial_time"]       = "--:--"
+        current_cycle["confidence"]        = "- -"
+        current_cycle["serial_finalized"]  = False
+        current_cycle["ocr_phase"]         = "scanning"
+        current_cycle["ocr_scan_start_time"] = time.time()
+        current_cycle["holes_count"]       = 0
+        current_cycle["defects"]           = []
+        current_cycle["instruction"]       = "WAITING FOR PART"
+        current_cycle["instruction_color"] = "blue"
+        current_cycle["zone_images"]       = {}
+        current_cycle.pop("ocr_raw_crop", None)
+        current_cycle.pop("final_dir", None)
+        current_cycle.pop("folder_name", None)
+        current_cycle["folder_created"]          = False
+        current_cycle["empty_table_first_seen"]  = None
+        current_cycle["auto_finishing"]          = False
+    # Tell OCR process to reset
+    global current_ocr_box, ocr_reset_flag
+    current_ocr_box = None
+    ocr_reset_flag = True
+    log.info("[BREAK TIME] False start detected. Cycle reset silently.")
 
 def _force_finalize_no_serial():
     """
@@ -1153,6 +1281,13 @@ def _force_finalize_no_serial():
         if current_cycle["serial"] in ("------", "", None):
             current_cycle["serial"] = "NO_SERIAL"
 
+        serial_str = current_cycle["serial"]
+        
+        if serial_str == "NO_SERIAL":
+            final_defects = ["Serial not captured — part removed from table"]
+        else:
+            final_defects = ["Incomplete inspection — part removed from table before all zones captured"]
+
         result = "FAIL"
         current_cycle["fail_cycles"] += 1
         current_cycle["total_cycles"] += 1
@@ -1188,6 +1323,8 @@ def _force_finalize_no_serial():
         else:
             final_dir, folder_name = _get_or_create_cycle_dir()
 
+        # (Removed logic that renames folder to _no_image to prevent incorrect image file names)
+
         final_dir   = current_cycle["final_dir"]
         folder_name = current_cycle["folder_name"]
 
@@ -1210,6 +1347,14 @@ def _force_finalize_no_serial():
                 saved_images[zone] = img_path
                 log.info(f"[IMAGE] Confirmed {zone} → {img_path}")
 
+        crop_path = os.path.join(final_dir, f"{folder_name}_ocr.png")
+        if not os.path.exists(crop_path) and current_cycle.get("ocr_raw_crop"):
+            with open(crop_path, "wb") as f:
+                f.write(current_cycle["ocr_raw_crop"])
+        if os.path.exists(crop_path):
+            saved_images["ocr_crop"] = crop_path
+            log.info(f"[IMAGE] Confirmed OCR crop → {crop_path}")
+
         # Generate PDF report
         report_path = os.path.join(final_dir, f"{folder_name}.pdf")
         current_cycle["instruction"] = "CYCLE AUTO-SAVED (NO SERIAL) - NEXT PART"
@@ -1218,17 +1363,17 @@ def _force_finalize_no_serial():
     # PDF generation outside the lock
     try:
         create_inspection_report(
-            serial_number="NO SERIAL",
+            serial_number=serial_str,
             status="FAIL",
             date_str=today_str,
             time_str=time_str,
             zone_images=saved_images,
-            ocr_serial="NO SERIAL",
+            ocr_serial=serial_str,
             confidence=None,
-            defects=["Serial not captured — part removed from table"],
+            defects=final_defects,
             output_path=report_path
         )
-        log.info(f"[REPORT] No-serial report saved → {report_path}")
+        log.info(f"[REPORT] Auto-finish report saved → {report_path}")
     except Exception as e:
         log.error(f"[REPORT] Failed to generate no-serial PDF: {e}")
 
@@ -1295,18 +1440,7 @@ def _maybe_finalize_cycle():
     
     final_dir, folder_name = _get_or_create_cycle_dir()
     
-    # If cycle failed, prefix defect_ to the folder
-    if result == "FAIL" and not folder_name.startswith("defect_"):
-        defect_folder_name = f"defect_{folder_name}"
-        defect_dir = os.path.join(os.path.dirname(final_dir), defect_folder_name)
-        try:
-            os.rename(final_dir, defect_dir)
-            final_dir = defect_dir
-            folder_name = defect_folder_name
-            current_cycle["final_dir"] = final_dir
-            current_cycle["folder_name"] = folder_name
-        except Exception as e:
-            log.warning(f"Could not rename folder to defect: {e}")
+    # (Removed defect_ folder prefix logic as requested by user)
 
     # Ensure all zone images and ocr crop are written to disk
     saved_images = {}
@@ -1356,7 +1490,8 @@ def _maybe_finalize_cycle():
         current_cycle["instruction"] = "REPORT ERROR - REMOVE PART AND SCAN NEXT"
         current_cycle["instruction_color"] = "red"
 
-    threading.Thread(target=_reset_after_delay, args=(3.5,), daemon=True).start()
+    # NOTE: Removed automatic 3.5s reset thread. Cycle now stays active
+    # and ONLY resets when empty_table_timeout detects the part was removed.
 
 def _reset_after_delay(delay=2.5):
     """Pause so the UI can display PASS/FAIL, then reset for next cycle."""
@@ -1484,11 +1619,10 @@ def traceability_done_route():
         current_cycle["serial_time"]       = time_p
         current_cycle["confidence"]        = confidence
         current_cycle["serial_finalized"]  = bool(finalized)
-        
         # If finalized, extract the crop and update banner
         if finalized:
             global current_ocr_box
-            current_ocr_box = None
+            # DO NOT set current_ocr_box to None here so the green tracking box stays visible
             if "raw_crop_base64" in data:
                 import base64
                 img_data = base64.b64decode(data["raw_crop_base64"])
@@ -1503,11 +1637,7 @@ def traceability_done_route():
                 pass
             else:
                 # Serial came FIRST — zones still pending
-                nxt = _get_next_pending_zone()
-                if nxt:
-                    current_cycle["instruction"] = f"SERIAL LOCKED \u2713 - NOW SHOW {ZONE_CONFIG[nxt]['name'].upper()}"
-                else:
-                    current_cycle["instruction"] = "SERIAL LOCKED \u2713 - START ZONE INSPECTION"
+                current_cycle["instruction"] = "SERIAL LOCKED \u2713 - CONTINUE ZONE INSPECTION"
                 current_cycle["instruction_color"] = "green"
 
         current_cycle["cycle_result"]      = current_cycle.get("cycle_result") or "running"

@@ -9,6 +9,7 @@ import yaml
 import numpy as np
 from collections import Counter
 from datetime import datetime
+import queue
 
 # Pre-load PyTorch/YOLO to initialize C++ runtime and prevent Windows DLL conflicts with Paddle
 try:
@@ -97,6 +98,14 @@ def parse_serial_components(raw_text):
     # 4. Time (11th to 14th chars) -> Must be 4 digits
     raw_time = clean_padded[10:14]
     time_digits = re.sub(r'[^0-9]', '', raw_time)
+    if len(time_digits) > 0:
+        # Fix OCR misread where '2' is read as '7' in the hour's tens digit (e.g., '73' -> '23')
+        if time_digits[0] == '7':
+            time_digits = '2' + time_digits[1:]
+        # Same for the minutes' tens digit (e.g. '13:78' -> '13:28')
+        if len(time_digits) > 2 and time_digits[2] == '7':
+            time_digits = time_digits[:2] + '2' + time_digits[3:]
+            
     if len(time_digits) >= 4:
         time_p = f"{time_digits[:2]}:{time_digits[2:4]}"
     elif len(time_digits) > 0:
@@ -221,6 +230,10 @@ class TailgateOCR:
             self.yolo_model = None
         self.latest_box = None
 
+        self.ocr_thread = threading.Thread(target=self.ocr_worker_loop, daemon=True)
+        self.ocr_queue = queue.Queue(maxsize=1)
+        self.ocr_thread.start()
+
     def fetch_latest_frame(self):
         """Fetches the latest unannotated frame from the Flask server."""
         try:
@@ -241,42 +254,58 @@ class TailgateOCR:
             self.finalized_serial = None
             self.has_reported = False
             self.frame_counter = 0
-            log.info("[VOTE] Voting state reset for new cycle.")
+            self.ignore_until = time.time() + 2.0  # Cool-down to let operator remove old part
+            # Clear queue
+            while not self.ocr_queue.empty():
+                try: self.ocr_queue.get_nowait()
+                except queue.Empty: break
+            log.info("[VOTE] Voting state reset for new cycle. Cooling down for 2s.")
 
     def run(self):
         log.info("Tailgate OCR Standalone Process Started. Polling for frames...")
         while self.running:
             frame = self.fetch_latest_frame()
             if frame is None:
-                time.sleep(0.1)
+                time.sleep(0.05)
                 continue
 
             try:
-                self.perform_ocr(frame)
+                self.perform_yolo_detection(frame)
             except Exception as e:
-                log.error(f"Error during OCR processing: {e}")
+                log.error(f"Error during YOLO processing: {e}")
             
-            # Throttle slightly to not hammer the server if OCR finishes very quickly
-            time.sleep(0.05)
+            # Throttle slightly to not hammer the server
+            time.sleep(0.03)
 
-    def perform_ocr(self, frame):
+    def ocr_worker_loop(self):
+        """Background thread running PaddleOCR to prevent blocking YOLO tracking."""
+        while self.running:
+            try:
+                crop_frame = self.ocr_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                self.run_paddle_ocr(crop_frame)
+            except Exception as e:
+                log.error(f"Error in OCR worker: {e}")
+            finally:
+                self.ocr_queue.task_done()
+
+    def perform_yolo_detection(self, frame):
         """
-        Full OCR pipeline:
-          1. YOLO detection → crop region
-          2. Image preprocessing (zoom, filters, binarize)
-          3. PaddleOCR on processed image
-          4. Voting across multiple frames
-          5. Save crops to disk
-          6. Report finalized serial when vote passes
+        Fast YOLO loop:
+          1. Detect region
+          2. Update UI box
+          3. Send crop to OCR thread if idle
         """
         if self.ocr is None or self.yolo_model is None:
             time.sleep(0.5)
             return
 
-        # Skip if already finalized
-        with self._vote_lock:
-            if self.finalized_serial is not None:
-                return
+        # ── Cool-down check ──────────────────────────────────────────────────
+        if time.time() < getattr(self, 'ignore_until', 0):
+            return
 
         # ── Step 1: YOLO detection to locate serial number region ─────────────
         try:
@@ -287,7 +316,6 @@ class TailgateOCR:
             
         # Check if there are any detections
         if len(results) == 0 or len(results[0].boxes) == 0:
-            # If YOLO doesn't detect anything, return to prevent false positives
             self.latest_box = None
             return
 
@@ -301,7 +329,12 @@ class TailgateOCR:
             requests.post("http://127.0.0.1:5000/update_ocr_box", json={"box": [int(x1), int(y1), int(x2), int(y2)]}, timeout=0.5)
         except requests.exceptions.RequestException:
             pass
-        
+
+        # Skip heavy OCR processing if already finalized
+        with self._vote_lock:
+            if self.finalized_serial is not None:
+                return
+
         # Add padding around detected region for better OCR context
         h, w = frame.shape[:2]
         pad = 15  # Reverted back to 15 to avoid background noise
@@ -315,6 +348,15 @@ class TailgateOCR:
         if crop_frame.size == 0:
             return
 
+        # Send to OCR queue if idle
+        if self.ocr_queue.empty():
+            try:
+                self.ocr_queue.put_nowait(crop_frame)
+            except queue.Full:
+                pass
+
+    def run_paddle_ocr(self, crop_frame):
+        """Step 2 & 3: Run Image preprocessing and PaddleOCR on the crop."""
         # Save original crop to send to the UI (so UI doesn't look rotated)
         ui_crop = crop_frame.copy()
 
@@ -327,7 +369,6 @@ class TailgateOCR:
         # Sharpen before preprocessing (config: sharpen_enabled)
         if OCR_SHARPEN_ENABLED:
             crop_frame = sharpen_image(crop_frame)
-        # else: skip sharpening (use if camera is already crisp)
         
         # Run the configurable preprocessing pipeline
         processed = preprocess_for_ocr(crop_frame)
@@ -381,11 +422,18 @@ class TailgateOCR:
                      f"| History: {[r[0] for r in self.recent_readings]}")
             
             # Check for majority vote
-            if len(self.recent_readings) >= self.vote_threshold:
+            if len(self.recent_readings) >= 1:
                 serial_counts = Counter(r[0] for r in self.recent_readings)
                 most_common_serial, count = serial_counts.most_common(1)[0]
                 
-                if count >= self.vote_threshold:
+                # Dynamic Threshold: 
+                # If it's a perfect 14-char read, we trust it immediately (1 vote).
+                # Otherwise, we wait for the configured threshold to avoid locking bad reads.
+                dynamic_threshold = self.vote_threshold
+                if len(most_common_serial) == 14 and re.match(r'^\d{6}', most_common_serial):
+                    dynamic_threshold = 1
+                
+                if count >= dynamic_threshold:
                     # ── FINALIZED! Lock the serial number ─────────────────────
                     self.finalized_serial = most_common_serial
                     

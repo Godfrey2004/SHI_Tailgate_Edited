@@ -1,15 +1,15 @@
 confidence_thresholds:
-  default: 0.50
-  seq_innerzone1: 0.50
-  seq_innerzone2: 0.50
-  seq_outerzone1: 0.50
-  seq_outerzone2: 0.50
+  default: 0.40
+  seq_innerzone1: 0.40
+  seq_innerzone2: 0.40
+  seq_outerzone1: 0.40
+  seq_outerzone2: 0.40
 
 timings:
-  capture_delay_inner1: 0.5
-  capture_delay_inner2: 0.5
-  capture_delay_outer1: 0.5
-  capture_delay_outer2: 0.5
+  capture_delay_inner1: 1.0
+  capture_delay_inner2: 1.0
+  capture_delay_outer1: 1.0
+  capture_delay_outer2: 1.0
   inspect_time_inner1: 2.0
   inspect_time_inner2: 2.0
   inspect_time_outer1: 2.0
@@ -17,7 +17,7 @@ timings:
   # Empty table timeout: if no zone class (except hand) is detected for this many
   # seconds while a cycle is running, auto-finalize the cycle without waiting for serial.
   # Images already captured are saved; report is generated with NO_SERIAL label.
-  empty_table_timeout: 1.0
+  empty_table_timeout: 2.0
 
 camera:
   industrial:
@@ -41,8 +41,8 @@ ocr:
   # vote_threshold: Matching reads needed to LOCK the serial. (Default: 2)
   #   Lower threshold = faster but less accurate.
   #   Higher threshold = slower but more robust against bad reads.
-  vote_window: 3
-  vote_threshold: 2
+  vote_window: 2
+  vote_threshold: 1
 
   # --- Image Preprocessing Filters ---
   # Disable a filter by setting it to false to save processing time.
