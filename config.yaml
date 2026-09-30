@@ -1,9 +1,9 @@
 confidence_thresholds:
-  default: 0.40
-  seq_innerzone1: 0.40
-  seq_innerzone2: 0.40
-  seq_outerzone1: 0.40
-  seq_outerzone2: 0.40
+  default: 0.60
+  seq_innerzone1: 0.60
+  seq_innerzone2: 0.60
+  seq_outerzone1: 0.60
+  seq_outerzone2: 0.60
 
 timings:
   capture_delay_inner1: 1.0
