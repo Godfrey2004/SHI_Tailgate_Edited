@@ -216,7 +216,7 @@ class TailgateOCR:
             from ultralytics import YOLO
             from paddleocr import PaddleOCR
             
-            model_path = os.path.join(BASE_DIR, "Models", "serial", "best.pt")
+            model_path = os.path.join(BASE_DIR, "Models", "serial", "best-v2.pt")
             log.info(f"Initializing YOLO ({model_path}) for OCR region detection...")
             self.yolo_model = YOLO(model_path)
             
