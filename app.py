@@ -142,8 +142,9 @@ current_cycle = {
     "traceability_done": False,
     "zone_images"      : {}, # Stores the path or frame for each zone
     # ── Empty Table Detection ───────────────────────────────────
-    # Tracks when no zone class (except hand) is seen during a running cycle
-    "empty_table_first_seen": None,  # time.time() when emptiness first detected
+    # Triggers new cycle ONLY when YOLO detects the 'Empty_table' class
+    # continuously for 3 seconds during a running cycle.
+    "empty_table_first_seen": None,  # time.time() when Empty_table class first detected
     "auto_finishing"         : False, # True while auto-finish is in progress
 }
 
@@ -209,13 +210,16 @@ def cp_display_loop():
     last_processed_time = 0.0
     TARGET_INTERVAL = 1.0 / 30.0  # Smooth 30 FPS target
 
-    # Colour palette per class (BGR)
+    # Colour palette per class (BGR) — matched to new model class names
     CLASS_COLORS = {
-        "seg_innerzone1": (255, 200,   0),   # Blue
-        "seg_innerzone2": (0,   255,   0),   # Green
-        "seg_outerzone1": (255,  50, 255),   # Magenta/Pink
-        "seg_outerzone2": (0,   165, 255),   # Orange
-        "hand"          : (40,   40, 255),   # Red
+        "inner_zone_1"     : (255, 200,   0),   # Blue
+        "inner_zone_2"     : (0,   255,   0),   # Green
+        "outer_zone_1"     : (255,  50, 255),   # Magenta/Pink
+        "outer_zone_2"     : (0,   165, 255),   # Orange
+        "hand"             : (40,   40, 255),   # Red
+        "person"           : (0,   100, 255),   # Orange-Red
+        "empty_table"      : (120, 120, 120),   # Grey
+        "part_onthe_table" : (0,   220, 100),   # Lime Green
     }
     DEFAULT_COLOR = (180, 230, 180)
 
@@ -244,7 +248,8 @@ def cp_display_loop():
             draw_frame = frame.copy()
             for seg in segs_to_draw:
                 cls_name = seg["name"]
-                color    = CLASS_COLORS.get(cls_name.lower(), DEFAULT_COLOR)
+                # Normalise to lowercase+underscores to match CLASS_COLORS keys
+                color    = CLASS_COLORS.get(cls_name.lower().replace(" ", "_"), DEFAULT_COLOR)
                 
                 # Draw thick bounding box instead of mask
                 x1, y1, x2, y2 = seg["xyxy"]
@@ -861,11 +866,12 @@ except Exception as e:
     log.error(f"Failed to load Zone YOLO model: {e}")
     zone_model = None
 
+# Maps internal zone keys → YOLO model class names (lowercase+underscore normalised)
 YOLO_CLASS_MAP = {
-    "inner1": "seq_innerzone1",
-    "inner2": "seq_innerzone2",
-    "outer1": "seq_outerzone1",
-    "outer2": "seq_outerzone2",
+    "inner1": "inner_zone_1",
+    "inner2": "inner_zone_2",
+    "outer1": "outer_zone_1",
+    "outer2": "outer_zone_2",
 }
 
 
@@ -1035,7 +1041,7 @@ def zone_inference_loop():
                         "pts" : pts,
                     })
 
-                    norm_name = cls_name.lower().replace(" ", "")
+                    norm_name = cls_name.lower().replace(" ", "_")
                     for z_name in ALL_ZONES:
                         if YOLO_CLASS_MAP[z_name] == norm_name and conf > best_conf:
                             best_conf    = conf
@@ -1050,8 +1056,19 @@ def zone_inference_loop():
             now = time.time()
 
             # ── Empty Table Detection ──────────────────────────────────────
-            # Empty = no zone classes detected (hand is ignored — always excluded)
-            has_zone_class = detected_zone is not None
+            # Only triggers when YOLO explicitly detects the 'Empty_table' class
+            # AND does not detect 'Part_OnThe_Table' (Person and Hand are ignored)
+            # for 3 continuous seconds during an active running cycle.
+            is_empty_table_detected = any(
+                seg["name"].lower().replace(" ", "_") == "empty_table"
+                for seg in segs_to_save
+            )
+            is_part_detected = any(
+                seg["name"].lower().replace(" ", "_") == "part_onthe_table"
+                for seg in segs_to_save
+            )
+            valid_empty_table = is_empty_table_detected and not is_part_detected
+
             with lock:
                 cycle_result       = current_cycle.get("cycle_result")
                 cycle_is_running   = (cycle_result == "running")
@@ -1065,10 +1082,11 @@ def zone_inference_loop():
                 with lock:
                     has_progress = any(current_cycle.get(f"zone_{z}_status") == "done" for z in ALL_ZONES) or (current_cycle.get("serial") not in ("------", "", None))
                 
-                if not has_zone_class:
+                if valid_empty_table:
                     with lock:
                         if current_cycle.get("empty_table_first_seen") is None:
                             current_cycle["empty_table_first_seen"] = now
+                            log.info("[EMPTY TABLE] 'Empty_table' class detected — starting 3s timer")
                         elapsed_empty = now - current_cycle["empty_table_first_seen"]
                     
                     empty_timeout = get_timing("empty_table_timeout", 3.0)
@@ -1077,14 +1095,16 @@ def zone_inference_loop():
                             log.info(f"[EMPTY TABLE] Part removed after completion — resetting cycle")
                             threading.Thread(target=_silent_reset_cycle, daemon=True).start()
                         elif has_progress:
-                            log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no detections — triggering auto-finish")
+                            log.info(f"[EMPTY TABLE] 'Empty_table' held for {elapsed_empty:.2f}s — triggering auto-finish")
                             threading.Thread(target=_force_finalize_no_serial, daemon=True).start()
                         else:
                             log.info(f"[EMPTY TABLE] {elapsed_empty:.2f}s with no progress — resetting silently (break time)")
                             threading.Thread(target=_silent_reset_cycle, daemon=True).start()
                 else:
-                    # Something detected — reset empty-table timer
+                    # Empty_table class not detected — reset the timer
                     with lock:
+                        if current_cycle.get("empty_table_first_seen") is not None:
+                            log.info("[EMPTY TABLE] 'Empty_table' class lost — resetting timer")
                         current_cycle["empty_table_first_seen"] = None
             else:
                 with lock:
@@ -1161,12 +1181,21 @@ def zone_inference_loop():
                                 current_cycle["instruction"] = get_banner("capturing", f"CAPTURING PHOTO TAKE HAND OUT ({remaining:.1f}s)", time=f"{remaining:.1f}")
                                 current_cycle["instruction_color"] = "orange"
                         else:
-                            # Capture window complete → check for hand in frame
-                            is_hand_detected = any(seg["name"].lower() == "hand" for seg in segs_to_save)
+                            # Capture window complete → check for hand/person in frame
+                            is_hand_detected   = any(seg["name"].lower() == "hand"   for seg in segs_to_save)  # 'Hand'
+                            is_person_detected = any(seg["name"].lower() == "person" for seg in segs_to_save)  # 'Person'
 
-                            if is_hand_detected and zone != "inner1":
+                            # For inner1: hand is allowed, but person still blocks.
+                            # For all other zones: both hand and person block capture.
+                            if zone == "inner1":
+                                should_block = is_person_detected
+                            else:
+                                should_block = is_hand_detected or is_person_detected
+
+                            if should_block:
                                 zt[zone]["capture_start"] = now
-                                current_cycle["instruction"] = get_banner("hand_detected", "HAND DETECTED! PLEASE REMOVE HAND")
+                                blocker = "PERSON" if is_person_detected and not (is_hand_detected and zone != "inner1") else "HAND/PERSON"
+                                current_cycle["instruction"] = get_banner("hand_detected", f"{blocker} DETECTED! PLEASE REMOVE FROM FRAME")
                                 current_cycle["instruction_color"] = "red"
                             else:
                                 # ── CAPTURE PHOTO ──
