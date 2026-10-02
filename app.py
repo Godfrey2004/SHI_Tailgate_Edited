@@ -859,7 +859,7 @@ ZONE_CONFIG = {
 # ── YOLO Zone Detection Worker ────────────────────────────────────────────────
 try:
     from ultralytics import YOLO
-    zone_model_path = os.path.join(BASE_DIR, "Models", "sequence", "SHI_SEQ_V3.pt")
+    zone_model_path = os.path.join(BASE_DIR, "Models", "sequence", "SHI_TAIL_GATE_V4.pt")
     log.info(f"Loading Zone YOLO model ({zone_model_path})...")
     zone_model = YOLO(zone_model_path)
 except Exception as e:
