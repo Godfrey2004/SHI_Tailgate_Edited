@@ -1,5 +1,5 @@
 import os
-# Force OpenCV FFmpeg to low-latency, zero-buffer mode for RTSP
+# Force OpenCV FFmpeg to low-latency, zero-buffer mode (for offline video playback)
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|"
     "fflags;nobuffer|"
@@ -148,152 +148,154 @@ current_cycle = {
     "auto_finishing"         : False, # True while auto-finish is in progress
 }
 
-# ── CP Plus (RTSP) stream ─────────────────────────────────────────────────────
-cp_cap              = None          # cv2.VideoCapture for CP Plus
-cp_frame_lock       = threading.Lock()
-cp_frame_event      = threading.Event()
-cp_jpeg_cond        = threading.Condition()
-cp_frame_seq        = 0
-cp_latest_jpeg      = None          # latest JPEG bytes from CP Plus (1920x1080)
-cp_latest_raw_frame = None          # latest raw cv2 frame from CP Plus (1920x1080)
-cp_latest_frame     = None          # latest raw cv2 frame for detection_loop (1920x1080)
-cp_stream_active    = False
-latest_yolo_segs    = []            # list of {name, conf, xyxy, pts}
+# ── Seq Industrial Camera (IKapC GigE) — Zone Detection ──────────────────────
+seq_frame_lock       = threading.Lock()
+seq_frame_event      = threading.Event()
+seq_jpeg_cond        = threading.Condition()
+seq_frame_seq        = 0
+seq_latest_jpeg      = None          # latest JPEG bytes from Seq cam
+seq_latest_orig_frame = None         # pristine, untouched full native resolution frame from industrial camera
+seq_latest_raw_frame = None          # latest raw cv2 frame for YOLO inference
+seq_latest_frame     = None          # alias for zone_inference_loop
+latest_yolo_segs     = []            # list of {name, conf, xyxy, pts}
+seq_video_cap        = None
+seq_video_active     = False
 
-def cp_capture_loop():
-    """Ultra-fast background thread: captures CP Plus RTSP at line rate with zero latency."""
-    global cp_cap, cp_latest_raw_frame, cp_latest_frame, cp_stream_active
-    consecutive_fail = 0
-    log.info("[CP] Dedicated RTSP capture loop started")
+# Colour palette per class (BGR) — matched to zone model class names
+SEQ_CLASS_COLORS = {
+    "inner_zone_1"     : (255, 200,   0),
+    "inner_zone1"      : (255, 200,   0),
+    "inner_zone_2"     : (0,   255,   0),
+    "outer_zone_1"     : (255,  50, 255),
+    "outerzone_1"      : (255,  50, 255),
+    "outer_zone_2"     : (0,   165, 255),
+    "hand"             : (40,   40, 255),
+    "person"           : (0,   100, 255),
+    "empty_table"      : (120, 120, 120),
+    "emptytable"       : (120, 120, 120),
+    "part_onthe_table" : (0,   220, 100),
+    "path_on_table"    : (0,   220, 100),
+}
+SEQ_DEFAULT_COLOR = (180, 230, 180)
+
+
+def seq_display_loop():
+    """Background thread: reads frames from cam_seq, draws YOLO overlays, encodes JPEG."""
+    global seq_latest_jpeg, seq_frame_seq, seq_latest_raw_frame, seq_latest_frame
+    log.info("[SEQ] Display loop started")
+    TARGET_INTERVAL = 1.0 / 30.0
+    last_t = 0.0
     while True:
-        start_t = time.time()
-        with cp_frame_lock:
-            cap = cp_cap
-            active = cp_stream_active
-        if not active or cap is None:
-            time.sleep(0.05)
-            continue
-
-        ret, frame = cap.read()
-        if not ret:
-            consecutive_fail += 1
-            if consecutive_fail > 60:
-                log.warning("[CP] Too many read failures - marking stream inactive")
-                with cp_frame_lock:
-                    cp_stream_active = False
-                consecutive_fail = 0
-            time.sleep(0.02)
-            continue
-        consecutive_fail = 0
-
-        # Guarantee 1920x1080 Full HD resolution for feed and processing
-        h, w = frame.shape[:2]
-        if w != 1920 or h != 1080:
-            frame = cv2.resize(frame, (1920, 1080), interpolation=cv2.INTER_LINEAR)
-
-        with cp_frame_lock:
-            cp_latest_raw_frame = frame
-            cp_latest_frame = frame
-        cp_frame_event.set()
-        
-        elapsed = time.time() - start_t
-        target_fps = 1.0 / 30.0
-        if elapsed < target_fps:
-            time.sleep(target_fps - elapsed)
-
-threading.Thread(target=cp_capture_loop, daemon=True).start()
-
-def cp_display_loop():
-    """Background thread: renders overlays and encodes 1920x1080 JPEG at smooth ~30 fps."""
-    global cp_latest_jpeg, cp_frame_seq
-    log.info("[CP] Display encoding loop started")
-    last_processed_time = 0.0
-    TARGET_INTERVAL = 1.0 / 30.0  # Smooth 30 FPS target
-
-    # Colour palette per class (BGR) — matched to new model class names
-    CLASS_COLORS = {
-        "inner_zone_1"     : (255, 200,   0),   # Blue
-        "inner_zone_2"     : (0,   255,   0),   # Green
-        "outer_zone_1"     : (255,  50, 255),   # Magenta/Pink
-        "outer_zone_2"     : (0,   165, 255),   # Orange
-        "hand"             : (40,   40, 255),   # Red
-        "person"           : (0,   100, 255),   # Orange-Red
-        "empty_table"      : (120, 120, 120),   # Grey
-        "part_onthe_table" : (0,   220, 100),   # Lime Green
-    }
-    DEFAULT_COLOR = (180, 230, 180)
-
-    while True:
-        # Wait for a new frame event with timeout
-        cp_frame_event.wait(timeout=0.04)
-        cp_frame_event.clear()
+        seq_frame_event.wait(timeout=0.04)
+        seq_frame_event.clear()
 
         now = time.time()
-        elapsed = now - last_processed_time
-        if elapsed < TARGET_INTERVAL:
-            time.sleep(max(0.001, TARGET_INTERVAL - elapsed))
+        if (now - last_t) < TARGET_INTERVAL:
+            time.sleep(max(0.001, TARGET_INTERVAL - (now - last_t)))
 
-        with cp_frame_lock:
-            frame = cp_latest_raw_frame
-            active = cp_stream_active
+        with seq_frame_lock:
+            frame = seq_latest_raw_frame
             segs_to_draw = list(latest_yolo_segs)
 
-        if not active or frame is None:
+        if frame is None:
             time.sleep(0.05)
             continue
 
-        last_processed_time = time.time()
+        last_t = time.time()
 
         if segs_to_draw:
             draw_frame = frame.copy()
             for seg in segs_to_draw:
                 cls_name = seg["name"]
-                # Normalise to lowercase+underscores to match CLASS_COLORS keys
-                color    = CLASS_COLORS.get(cls_name.lower().replace(" ", "_"), DEFAULT_COLOR)
-                
-                # Draw thick bounding box instead of mask
+                color = SEQ_CLASS_COLORS.get(cls_name.lower().replace(" ", "_"), SEQ_DEFAULT_COLOR)
                 x1, y1, x2, y2 = seg["xyxy"]
                 cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 4)
                 lx, ly = x1, max(y1 - 10, 10)
-
-                # Label without confidence threshold
-                label = f"{cls_name}"
-                font_scale = 1.0
-                thickness = 2
-                (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                
-                # Label background
-                cv2.rectangle(draw_frame, (lx, ly - th - 8), (lx + tw + 12, ly + baseline + 4), color, -1)
-                
-                # Label text
-                cv2.putText(draw_frame, label, (lx + 6, ly), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness, cv2.LINE_AA)
+                label = cls_name
+                fs, th2 = 1.0, 2
+                (tw, fh), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th2)
+                cv2.rectangle(draw_frame, (lx, ly - fh - 8), (lx + tw + 12, ly + bl + 4), color, -1)
+                cv2.putText(draw_frame, label, (lx + 6, ly), cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), th2, cv2.LINE_AA)
         else:
             draw_frame = frame
 
-        # (Banner drawing removed to avoid double-banner with HTML UI)
-        
-        # JPEG encode at quality 70 (crisp 1080p, low network payload)
-        _, buf = cv2.imencode(".jpg", draw_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        # For smooth web streaming in browser: preserve aspect ratio, cap max stream dimension at 1920
+        stream_frame = draw_frame
+        dh, dw = draw_frame.shape[:2]
+        if dw > 1920 or dh > 1080:
+            scale = min(1920.0 / dw, 1080.0 / dh)
+            stream_frame = cv2.resize(draw_frame, (int(dw * scale), int(dh * scale)), interpolation=cv2.INTER_LINEAR)
+
+        _, buf = cv2.imencode(".jpg", stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
         jpeg_bytes = buf.tobytes()
+        with seq_jpeg_cond:
+            seq_latest_jpeg = jpeg_bytes
+            seq_frame_seq += 1
+            seq_jpeg_cond.notify_all()
 
-        with cp_jpeg_cond:
-            cp_latest_jpeg = jpeg_bytes
-            cp_frame_seq += 1
-            cp_jpeg_cond.notify_all()
 
-threading.Thread(target=cp_display_loop, daemon=True).start()
+def seq_capture_loop():
+    """Background thread: pulls frames from cam_seq (second IKapC GigE) or uploaded video."""
+    global seq_latest_orig_frame, seq_latest_raw_frame, seq_latest_frame, seq_video_cap, seq_video_active
+    log.info("[SEQ] Capture loop started")
+    consecutive_fail = 0
+    while True:
+        start_t = time.time()
+        frame = None
+        if seq_video_active and seq_video_cap is not None:
+            with seq_frame_lock:
+                if seq_video_cap is not None:
+                    ret, frame = seq_video_cap.read()
+                else:
+                    ret = False
+            if not ret:
+                consecutive_fail += 1
+                if consecutive_fail > 10:
+                    # Video ended -> loop back to beginning for smooth playback
+                    with seq_frame_lock:
+                        if seq_video_cap is not None:
+                            seq_video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            ret, frame = seq_video_cap.read()
+                    if not ret:
+                        seq_video_active = False
+                        log.warning("[SEQ] Video ended")
+                        time.sleep(0.5)
+                        continue
+                    consecutive_fail = 0
+            else:
+                consecutive_fail = 0
+        else:
+            if not cam_seq.is_connected:
+                time.sleep(0.05)
+                continue
+            frame = cam_seq.get_frame()
 
-def gen_cp_frames():
-    """MJPEG generator for CP Plus stream - yields only fresh frames with zero duplicate flooding."""
-    placeholder = _make_placeholder("CP Plus - NO SIGNAL")
+        if frame is not None:
+            # 100% UNTOUCHED original full-resolution camera frame
+            orig_frame = frame.copy()
+
+            with seq_frame_lock:
+                seq_latest_orig_frame = orig_frame
+                seq_latest_raw_frame = orig_frame
+                seq_latest_frame = orig_frame
+            seq_frame_event.set()
+
+        elapsed = time.time() - start_t
+        target_fps = 1.0 / 30.0
+        if elapsed < target_fps:
+            time.sleep(target_fps - elapsed)
+
+
+def gen_seq_frames():
+    """MJPEG generator for Seq Industrial camera feed."""
+    placeholder = _make_placeholder("Seq Camera - NO SIGNAL")
     last_seq = -1
     while True:
-        with cp_jpeg_cond:
-            if cp_frame_seq == last_seq or cp_latest_jpeg is None:
-                cp_jpeg_cond.wait(timeout=0.2)
-            jpeg = cp_latest_jpeg
-            cur_seq = cp_frame_seq
-
+        with seq_jpeg_cond:
+            if seq_frame_seq == last_seq or seq_latest_jpeg is None:
+                seq_jpeg_cond.wait(timeout=0.2)
+            jpeg = seq_latest_jpeg
+            cur_seq = seq_frame_seq
         if jpeg is not None and cur_seq != last_seq:
             last_seq = cur_seq
             yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
@@ -529,8 +531,14 @@ class CameraStreamer:
         log.info("[GigE] Disconnected")
 
 
-cam = CameraStreamer()
+cam = CameraStreamer()           # Serial / OCR camera  (index 0 by default)
+cam_seq = CameraStreamer()      # Seq / Zone-detection camera (index 1 by default)
 atexit.register(cam.disconnect)
+atexit.register(cam_seq.disconnect)
+
+# Start Seq camera background threads
+threading.Thread(target=seq_capture_loop, daemon=True).start()
+threading.Thread(target=seq_display_loop, daemon=True).start()
 
 # Auto-start standalone OCR Engine
 ocr_process = None
@@ -578,11 +586,16 @@ def ind_capture_loop():
             ret, frame = ind_video_cap.read()
             if not ret:
                 consecutive_fail += 1
-                if consecutive_fail > 60:
-                    ind_video_active = False
-                    log.warning("[IND] Video ended")
-                    time.sleep(1.0)
-                continue
+                if consecutive_fail > 10:
+                    if ind_video_cap is not None:
+                        ind_video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = ind_video_cap.read()
+                    if not ret:
+                        ind_video_active = False
+                        log.warning("[IND] Video ended")
+                        time.sleep(1.0)
+                        continue
+                    consecutive_fail = 0
             else:
                 consecutive_fail = 0
         else:
@@ -645,69 +658,18 @@ def _make_placeholder(text="NO SIGNAL"):
 def index():
     return send_from_directory(BASE_DIR, "index.html")
 
-# ── CP Plus stream ────────────────────────────────────────────────────────────
+# ── Seq Industrial Camera (Zone Detection) stream ────────────────────────────
 @app.route("/video_feed")
 @app.route("/video_feed_cp")
 def video_feed():
-    return Response(gen_cp_frames(),
+    return Response(gen_seq_frames(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
-
-@app.route("/connect_camera", methods=["POST"])
-def connect_camera():
-    """Connect CP Plus camera via RTSP credentials."""
-    global cp_cap, cp_stream_active
-    data = request.get_json(silent=True) or {}
-    ip   = (data.get("ip") or "").strip() or "192.10.66.160"
-    port = data.get("port", 554)
-    user = data.get("user", "")
-    pwd  = data.get("pwd",  "")
-    path = data.get("path", "/stream1")
-
-    rtsp_url = f"rtsp://{user}:{pwd}@{ip}:{port}{path}"
-    rtsps_url = f"rtsps://{user}:{pwd}@{ip}:{port}{path}"
-    log.info(f"[CP] Connecting to rtsp(s)://{user}:***@{ip}:{port}{path}")
-
-    with cp_frame_lock:
-        cp_stream_active = False
-        if cp_cap:
-            cp_cap.release()
-        cp_cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-        if not cp_cap.isOpened():
-            log.info("[CP] rtsp connection failed, trying rtsps (secure RTSP)...")
-            cp_cap = cv2.VideoCapture(rtsps_url, cv2.CAP_FFMPEG)
-        if not cp_cap.isOpened():
-            log.error("[CP] Failed to open RTSP stream")
-            return jsonify({"status": "error", "message": "Cannot open RTSP stream. Check credentials/IP."}), 500
-        cp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cp_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        cp_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        cp_cap.set(cv2.CAP_PROP_FPS, 30)
-        cp_stream_active = True
-
-    with lock:
-        current_cycle["is_processing"] = True
-        current_cycle["status"] = f"CP Plus connected ({ip})"
-
-    log.info("[CP] RTSP stream connected OK")
-    return jsonify({"status": "success", "message": "CP Plus camera connected"})
-
-@app.route("/disconnect_camera", methods=["POST"])
-def disconnect_camera():
-    global cp_cap, cp_stream_active
-    with cp_frame_lock:
-        cp_stream_active = False
-        if cp_cap:
-            cp_cap.release()
-            cp_cap = None
-    with lock:
-        current_cycle["is_processing"] = False
-        current_cycle["status"] = "Awaiting camera connection"
-    return jsonify({"status": "success", "message": "CP Plus disconnected"})
 
 # ── Video file upload ─────────────────────────────────────────────────────────
 @app.route("/upload_video", methods=["POST"])
-def upload_video():
-    global cp_cap, cp_stream_active
+@app.route("/upload_seq_video", methods=["POST"])
+def upload_seq_video():
+    global seq_video_cap, seq_video_active
     if "video" not in request.files:
         return jsonify({"status": "error", "message": "No file provided"}), 400
     f        = request.files["video"]
@@ -716,18 +678,23 @@ def upload_video():
         return jsonify({"status": "error", "message": "Invalid filename"}), 400
     path = os.path.join(UPLOAD_DIR, filename)
     f.save(path)
-    with cp_frame_lock:
-        cp_stream_active = False
-        if cp_cap:
-            cp_cap.release()
-        cp_cap = cv2.VideoCapture(path)
-        if not cp_cap.isOpened():
-            return jsonify({"status": "error", "message": "Cannot open video"}), 500
-        cp_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cp_stream_active = True
+    
+    with seq_frame_lock:
+        seq_video_active = False
+        if seq_video_cap:
+            seq_video_cap.release()
+            seq_video_cap = None
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            return jsonify({"status": "error", "message": "Cannot open video file"}), 500
+        seq_video_cap = cap
+        seq_video_active = True
+
     with lock:
         current_cycle["is_processing"] = True
         current_cycle["status"] = f"Streaming: {filename}"
+        
+    log.info(f"[SEQ] Video loaded successfully: {filename}")
     return jsonify({"status": "success", "message": f"Streaming {filename}"})
 
 @app.route("/upload_ind_video", methods=["POST"])
@@ -752,7 +719,7 @@ def upload_ind_video():
     
     return jsonify({"status": "success", "message": "Industrial Video loaded successfully"})
 
-# ── Industrial / GigE routes ──────────────────────────────────────────────────
+# ── Industrial / GigE routes (Serial OCR camera) ──────────────────────────────
 @app.route("/industrial_feed")
 def industrial_feed():
     return Response(gen_ind_frames(),
@@ -806,6 +773,11 @@ def connect_gige():
         trigger_mode = data.get("trigger_mode"),
     )
     if ok:
+        global ind_video_active, ind_video_cap
+        ind_video_active = False
+        if ind_video_cap:
+            ind_video_cap.release()
+            ind_video_cap = None
         return jsonify({"status": "success", "message": "Industrial camera connected"})
     return jsonify({"status": "error", "message": cam.last_error_msg}), 500
 
@@ -844,6 +816,84 @@ def camera_diag():
         "frame_shape"         : list(frame.shape) if frame is not None else None,
     })
 
+# ── Seq Industrial Camera routes (Zone Detection) ─────────────────────────────
+@app.route("/seq_feed")
+def seq_feed():
+    return Response(gen_seq_frames(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+@app.route("/scan_seq_cameras")
+def scan_seq_cameras():
+    return jsonify({"cameras": cam_seq.scan_cameras()})
+
+@app.route("/connect_seq_gige", methods=["POST"])
+def connect_seq_gige():
+    if cam_seq.is_connected:
+        return jsonify({"status": "success", "message": "Seq camera already connected"})
+    data = request.get_json(silent=True) or {}
+
+    # Load defaults from config if not provided
+    exposure = data.get("exposure")
+    if exposure is None:
+        load_config()
+        exposure = _cached_config.get("camera", {}).get("seq", {}).get("exposure", 9600)
+    gain  = data.get("gain")
+    if gain is None:
+        gain = _cached_config.get("camera", {}).get("seq", {}).get("gain", 2)
+    gamma = data.get("gamma")
+    if gamma is None:
+        gamma = _cached_config.get("camera", {}).get("seq", {}).get("gamma", 1.0)
+
+    target_index = int(data.get("index", 1))
+
+    ok = cam_seq.connect(
+        index        = target_index,
+        exposure     = exposure,
+        gain         = gain,
+        gamma        = gamma,
+        pixel_format = data.get("pixel_format"),
+        trigger_mode = data.get("trigger_mode"),
+    )
+    if ok:
+        global seq_video_active, seq_video_cap
+        with seq_frame_lock:
+            seq_video_active = False
+            if seq_video_cap:
+                seq_video_cap.release()
+                seq_video_cap = None
+        with lock:
+            current_cycle["is_processing"] = True
+            current_cycle["status"] = "Seq GigE camera connected"
+        return jsonify({"status": "success", "message": "Seq camera (zone detection) connected"})
+    return jsonify({"status": "error", "message": cam_seq.last_error_msg}), 500
+
+@app.route("/disconnect_seq_gige", methods=["POST"])
+def disconnect_seq_gige():
+    try:
+        cam_seq.disconnect()
+        with lock:
+            current_cycle["is_processing"] = False
+            current_cycle["status"] = "Awaiting camera connection"
+        return jsonify({"status": "success", "message": "Seq camera disconnected"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/update_seq_gige_features", methods=["POST"])
+def update_seq_gige_features():
+    data    = request.get_json(silent=True) or {}
+    ok, msg = cam_seq.update_features(**data)
+    return jsonify({"status": "success" if ok else "error", "message": msg})
+
+@app.route("/seq_camera_status")
+def seq_camera_status():
+    return jsonify({
+        "connected"  : cam_seq.is_connected,
+        "status"     : "Connected" if cam_seq.is_connected else "Disconnected",
+        "model"      : "IKap GigE (Seq)" if cam_seq.is_connected else "",
+        "fps"        : 30 if cam_seq.is_connected else None,
+        "resolution" : f"{cam_seq.cam_width}x{cam_seq.cam_height}" if cam_seq.is_connected else None,
+    })
+
 # ── Cycle logic helpers ───────────────────────────────────────────────────────
 ALL_ZONES = ("inner1", "inner2", "outer1", "outer2")
 
@@ -859,19 +909,19 @@ ZONE_CONFIG = {
 # ── YOLO Zone Detection Worker ────────────────────────────────────────────────
 try:
     from ultralytics import YOLO
-    zone_model_path = os.path.join(BASE_DIR, "Models", "sequence", "SHI_TAIL_GATE_V4.pt")
+    zone_model_path = os.path.join(BASE_DIR, "Models", "sequence", "SHI_TAILGATE_05_11_2026.pt")
     log.info(f"Loading Zone YOLO model ({zone_model_path})...")
     zone_model = YOLO(zone_model_path)
 except Exception as e:
     log.error(f"Failed to load Zone YOLO model: {e}")
     zone_model = None
 
-# Maps internal zone keys → YOLO model class names (lowercase+underscore normalised)
+# Maps internal zone keys → list of YOLO model class names (lowercase+underscore normalised)
 YOLO_CLASS_MAP = {
-    "inner1": "inner_zone_1",
-    "inner2": "inner_zone_2",
-    "outer1": "outer_zone_1",
-    "outer2": "outer_zone_2",
+    "inner1": ["inner_zone_1", "inner_zone1"],
+    "inner2": ["inner_zone_2"],
+    "outer1": ["outer_zone_1", "outerzone_1"],
+    "outer2": ["outer_zone_2"],
 }
 
 
@@ -951,7 +1001,7 @@ def _get_or_create_cycle_dir():
 
 
 def _save_image_to_disk(name, img_data):
-    """Saves an image (bytes or ndarray) immediately into the cycle directory."""
+    """Saves an image (bytes or ndarray) immediately into the cycle directory at full original resolution."""
     if img_data is None:
         return None
     try:
@@ -961,8 +1011,10 @@ def _save_image_to_disk(name, img_data):
             with open(img_path, "wb") as f:
                 f.write(img_data)
         elif isinstance(img_data, np.ndarray):
-            cv2.imwrite(img_path, img_data)
-        log.info(f"[IMAGE] Immediately saved {name} → {img_path}")
+            # Lossless PNG write (compression level 1 = fast, 100% pixel-perfect original quality)
+            cv2.imwrite(img_path, img_data, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        dim_str = f"{img_data.shape[1]}x{img_data.shape[0]}" if isinstance(img_data, np.ndarray) else f"{len(img_data)} bytes"
+        log.info(f"[IMAGE] Immediately saved {name} ({dim_str}) → {img_path}")
         return img_path
     except Exception as e:
         log.error(f"[IMAGE] Failed to save {name} to disk: {e}")
@@ -994,8 +1046,8 @@ def zone_inference_loop():
             time.sleep(1.0)
             continue
 
-        with cp_frame_lock:
-            frame = cp_latest_frame
+        with seq_frame_lock:
+            frame = seq_latest_frame
 
         if frame is None:
             time.sleep(0.1)
@@ -1043,28 +1095,30 @@ def zone_inference_loop():
 
                     norm_name = cls_name.lower().replace(" ", "_")
                     for z_name in ALL_ZONES:
-                        if YOLO_CLASS_MAP[z_name] == norm_name and conf > best_conf:
+                        mapped = YOLO_CLASS_MAP.get(z_name, [])
+                        is_match = (norm_name in mapped) if isinstance(mapped, (list, tuple)) else (norm_name == mapped)
+                        if is_match and conf > best_conf:
                             best_conf    = conf
                             detected_zone = z_name
                             detected_zone_xyxy = xyxy
                             break
 
-            with cp_frame_lock:
+            with seq_frame_lock:
                 global latest_yolo_segs
                 latest_yolo_segs = segs_to_save
 
             now = time.time()
 
             # ── Empty Table Detection ──────────────────────────────────────
-            # Only triggers when YOLO explicitly detects the 'Empty_table' class
-            # AND does not detect 'Part_OnThe_Table' (Person and Hand are ignored)
+            # Only triggers when YOLO explicitly detects the 'Empty_table' / 'emptytable' class
+            # AND does not detect 'Part_OnThe_Table' / 'path_on_table' (Person and Hand are ignored)
             # for 3 continuous seconds during an active running cycle.
             is_empty_table_detected = any(
-                seg["name"].lower().replace(" ", "_") == "empty_table"
+                seg["name"].lower().replace(" ", "_") in ("empty_table", "emptytable")
                 for seg in segs_to_save
             )
             is_part_detected = any(
-                seg["name"].lower().replace(" ", "_") == "part_onthe_table"
+                seg["name"].lower().replace(" ", "_") in ("part_onthe_table", "part_0nthe_table", "path_on_table", "part_on_table")
                 for seg in segs_to_save
             )
             valid_empty_table = is_empty_table_detected and not is_part_detected
@@ -1198,15 +1252,23 @@ def zone_inference_loop():
                                 current_cycle["instruction"] = get_banner("hand_detected", f"{blocker} DETECTED! PLEASE REMOVE FROM FRAME")
                                 current_cycle["instruction_color"] = "red"
                             else:
-                                # ── CAPTURE PHOTO ──
-                                with cp_frame_lock:
-                                    raw_to_save = cp_latest_frame.copy() if cp_latest_frame is not None else frame.copy()
+                                # ── CAPTURE PHOTO (ORIGINAL NATIVE CAMERA RESOLUTION & QUALITY) ──
+                                with seq_frame_lock:
+                                    raw_to_save = (
+                                        seq_latest_orig_frame.copy()
+                                        if seq_latest_orig_frame is not None
+                                        else (seq_latest_raw_frame.copy() if seq_latest_raw_frame is not None else frame.copy())
+                                    )
 
-                                _, clean_buf = cv2.imencode(".png", raw_to_save)
-                                clean_jpeg = clean_buf.tobytes()
-                                current_cycle.setdefault("zone_images", {})[zone] = clean_jpeg
-                                log.info(f"[ZONE] {zone} CAPTURED clean frame → done (green)")
-                                _save_image_to_disk(zone, clean_jpeg)
+                                # Save full resolution image directly to disk
+                                img_path = _save_image_to_disk(zone, raw_to_save)
+
+                                # Also save lossless PNG bytes in memory for report generation
+                                _, clean_buf = cv2.imencode(".png", raw_to_save, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+                                current_cycle.setdefault("zone_images", {})[zone] = clean_buf.tobytes()
+
+                                h_orig, w_orig = raw_to_save.shape[:2]
+                                log.info(f"[ZONE] {zone} CAPTURED at original resolution ({w_orig}x{h_orig}) → done (green)")
 
                                 # ── Photo saved → immediately go green (done) ──
                                 current_cycle[f"zone_{zone}_status"] = "done"
@@ -1369,7 +1431,7 @@ def _force_finalize_no_serial():
                             with open(img_path, "wb") as f:
                                 f.write(img_data)
                         elif isinstance(img_data, np.ndarray):
-                            cv2.imwrite(img_path, img_data)
+                            cv2.imwrite(img_path, img_data, [cv2.IMWRITE_PNG_COMPRESSION, 1])
                     except Exception as e:
                         log.error(f"[EMPTY TABLE] Failed to save {zone}: {e}")
             if os.path.exists(img_path):
@@ -1482,7 +1544,7 @@ def _maybe_finalize_cycle():
                     with open(img_path, "wb") as f:
                         f.write(img_data)
                 elif isinstance(img_data, np.ndarray):
-                    cv2.imwrite(img_path, img_data)
+                    cv2.imwrite(img_path, img_data, [cv2.IMWRITE_PNG_COMPRESSION, 1])
         if os.path.exists(img_path):
             saved_images[zone] = img_path
             log.info(f"[IMAGE] Confirmed {zone} → {img_path}")
@@ -1742,10 +1804,10 @@ def static_files(filename):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("=" * 55)
+    print("=" * 60)
     print("  SHI Tail Gate Inspection Server")
-    print("  CP Plus  ->  POST /connect_camera  {ip,port,user,pwd,path}")
-    print("  GigE SDK ->  POST /connect_gige    {index,exposure,gain,...}")
-    print("  Open UI  ->  http://localhost:5000")
-    print("=" * 55)
+    print("  Serial GigE  ->  POST /connect_gige      {index,exposure,...}")
+    print("  Seq GigE     ->  POST /connect_seq_gige  {index,exposure,...}")
+    print("  Open UI      ->  http://localhost:5000")
+    print("=" * 60)
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

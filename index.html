@@ -1125,7 +1125,7 @@
     <!-- Workspace -->
     <div class="workspace" style="display: flex; flex-direction: row; gap: 16px;">
         
-        <!-- Left Side: Live Feed (CP Plus) -->
+        <!-- Left Side: Live Feed (Seq Industrial Camera - Zone Detection) -->
         <div style="flex: 2.2; position: relative; border-radius: 12px; border: 1px solid var(--dark-border); display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0b0f19;">
             <div class="hud-overlay" style="position: absolute; inset: 0; pointer-events: none; z-index: 5; display: flex; flex-direction: column; justify-content: space-between; padding: 14px;">
                 <div class="hud-top" style="display: flex; justify-content: flex-end; align-items: center; width: 100%;">
@@ -1146,7 +1146,7 @@
                 <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"/>
                 </svg>
-                <span>CP Plus Stream Standby</span>
+                <span>Seq Camera - No Signal</span>
             </div>
         </div>
 
@@ -1261,7 +1261,7 @@
                 <!-- Config Tabs -->
                 <div class="config-tabs">
                     <button class="config-tab-btn active" onclick="switchConfigTab(event, 'gige-config-panel')">GigE Camera</button>
-                    <button class="config-tab-btn" onclick="switchConfigTab(event, 'cp-plus-config-panel')">CP Plus</button>
+                    <button class="config-tab-btn" onclick="switchConfigTab(event, 'seq-gige-config-panel')">Seq Camera (GigE)</button>
                     <button class="config-tab-btn" onclick="switchConfigTab(event, 'upload-config-panel')">Offline Video</button>
                 </div>
 
@@ -1368,55 +1368,106 @@
                         <div id="gige-message" style="margin-top: 8px; font-size: 11px; color: #555; text-align: center;"></div>
                     </div>
 
-                    <!-- CP Plus Config Panel -->
-                    <div class="config-panel" id="cp-plus-config-panel">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="cp-ip">IP Address</label>
-                                <input type="text" id="cp-ip" class="input-text" value="192.10.66.160">
+                    <!-- Seq Camera (GigE) Config Panel -->
+                    <div class="config-panel" id="seq-gige-config-panel">
+
+                        <!-- Seq Camera Status Card -->
+                        <div id="seq-gige-status-card" style="background: #f0f7ff; border: 1px solid #b3d4f7; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <span style="font-weight: 700; font-size: 12px; color: #1a3a5c;">Seq Camera</span>
+                                <span style="font-weight: 600; font-size: 11px; color: #1a3a5c;" id="seq-gige-model-name">IKap GigE (Zone)</span>
                             </div>
-                            <div class="form-group">
-                                <label for="cp-port">Port</label>
-                                <input type="text" id="cp-port" class="input-text" value="554">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                                <div>
+                                    <div style="font-size: 10px; color: #666;">Status</div>
+                                    <div id="seq-gige-conn-status" style="font-size: 11px; font-weight: 700; color: #dc2626;">Disconnected</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 10px; color: #666;">FPS</div>
+                                    <div id="seq-gige-fps" style="font-size: 11px; font-weight: 700; color: #1a3a5c;">—</div>
+                                </div>
+                                <div style="grid-column: 1/-1;">
+                                    <div style="font-size: 10px; color: #666;">Resolution</div>
+                                    <div id="seq-gige-resolution" style="font-size: 11px; font-weight: 700; color: #1a3a5c;">—</div>
+                                </div>
                             </div>
                         </div>
+
+                        <!-- Scan + Camera select row -->
+                        <div style="display: flex; gap: 6px; margin-bottom: 10px; align-items: flex-end;">
+                            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                <label for="seq-gige-camera-select">Discovered Camera</label>
+                                <select id="seq-gige-camera-select" class="input-text" style="width: 100%;" onchange="onSeqGigeCameraSelected()">
+                                    <option value="">— scan to discover —</option>
+                                </select>
+                            </div>
+                            <button class="btn-submit" style="flex-shrink:0; padding: 8px 12px; font-size: 11px; margin-bottom: 0;" onclick="scanSeqCameras()">🔍 Scan</button>
+                        </div>
+
+                        <!-- IP + Serial row -->
                         <div class="form-row">
                             <div class="form-group">
-                                <label for="cp-user">Username</label>
-                                <input type="text" id="cp-user" class="input-text" value="admin">
+                                <label for="seq-gige-ip">Camera IP</label>
+                                <input type="text" id="seq-gige-ip" class="input-text" placeholder="169.254.x.x" value="">
                             </div>
                             <div class="form-group">
-                                <label for="cp-pwd">Password</label>
-                                <input type="password" id="cp-pwd" class="input-text" value="Vidana_123">
+                                <label for="seq-gige-index">Camera Index</label>
+                                <input type="number" id="seq-gige-index" class="input-text" placeholder="1" value="1" min="0" max="8">
                             </div>
                         </div>
+
+                        <!-- Exposure + Gain row -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="seq-gige-exposure">Exposure (µs)</label>
+                                <input type="number" id="seq-gige-exposure" class="input-text" placeholder="e.g. 9600" value="9600" min="1" max="1000000">
+                            </div>
+                            <div class="form-group">
+                                <label for="seq-gige-gain">Gain</label>
+                                <input type="number" id="seq-gige-gain" class="input-text" placeholder="2" value="2" step="0.1" min="0">
+                            </div>
+                        </div>
+
+                        <!-- Gamma row -->
+                        <div class="form-row">
+                            <div class="form-group" style="width: 100%;">
+                                <label for="seq-gige-gamma">Gamma</label>
+                                <input type="number" id="seq-gige-gamma" class="input-text" placeholder="1.0" value="1.0" step="0.1" min="0" max="4">
+                            </div>
+                        </div>
+
+                        <!-- Trigger Mode -->
                         <div class="form-group">
-                            <label for="cp-stream-mode">Stream Resolution Preset</label>
-                            <select id="cp-stream-mode" class="input-text" onchange="document.getElementById('cp-path').value = this.value;" style="margin-bottom: 8px;">
-                                <option value="/video/live?channel=1&subtype=0" selected>1920&times;1080 Full HD (Main Stream - subtype=0)</option>
-                                <option value="/video/live?channel=1&subtype=1">Sub Stream (Bandwidth Saver - subtype=1)</option>
+                            <label for="seq-gige-trigger">Trigger Mode</label>
+                            <select id="seq-gige-trigger" class="input-text" style="width: 100%;">
+                                <option value="Continuous" selected>Continuous (Free-Run)</option>
+                                <option value="Software">Software Trigger</option>
+                                <option value="Line0">Hardware — Line 0</option>
+                                <option value="Line1">Hardware — Line 1</option>
                             </select>
                         </div>
-                        <div class="form-group">
-                            <label for="cp-path">RTSP Path</label>
-                            <input type="text" id="cp-path" class="input-text" value="/video/live?channel=1&subtype=0">
+
+                        <!-- Action Buttons -->
+                        <div style="display: flex; gap: 8px; margin-top: 12px;">
+                            <button class="btn-submit" style="flex: 1;" id="seq-gige-connect-btn" onclick="connectSeqGige()">Connect Seq Cam</button>
+                            <button class="btn-submit" style="flex: 1; background: #dc2626;" id="seq-gige-disconnect-btn" onclick="disconnectSeqGige()" disabled>Disconnect</button>
                         </div>
-                        <div style="display: flex; gap: 8px; margin-top: 10px;">
-                            <button class="btn-submit" style="flex: 1;" id="cp-connect-btn" onclick="connectCpPlus()">Connect CP Plus</button>
-                            <button class="btn-submit" style="flex: 1; background: #dc2626;" id="cp-disconnect-btn" onclick="disconnectCpPlus()" disabled>Disconnect</button>
+                        <div style="display: flex; margin-top: 8px;">
+                            <button class="btn-submit" style="flex: 1; background: #0284c7;" id="seq-gige-save-btn" onclick="updateSeqGigeFeatures()" disabled>Save Settings</button>
                         </div>
-                        <div id="cp-message" style="margin-top: 8px; font-size: 11px; text-align: center;"></div>
+
+                        <div id="seq-gige-message" style="margin-top: 8px; font-size: 11px; color: #555; text-align: center;"></div>
                     </div>
 
                     <!-- Upload Panel -->
                     <div class="config-panel" id="upload-config-panel">
                         
-                        <div style="font-size: 11px; font-weight: 700; color: #1a3a5c; margin-bottom: 6px;">CP Plus Video (Zone Detection)</div>
+                        <div style="font-size: 11px; font-weight: 700; color: #1a3a5c; margin-bottom: 6px;">Seq Camera Video (Zone Detection)</div>
                         <div class="upload-area" onclick="triggerFileInput('cp')" style="margin-bottom: 16px; padding: 16px;">
                             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--accent-blue)">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z"/>
                             </svg>
-                            <div style="font-weight: 600; color: var(--text-main); margin-top: 4px;">Upload CP Plus Video</div>
+                            <div style="font-weight: 600; color: var(--text-main); margin-top: 4px;">Upload Seq Camera Video</div>
                             <input type="file" id="video-file-input-cp" style="display: none;" accept="video/*" onchange="handleFileSelect(event, 'cp')">
                         </div>
 
@@ -1475,7 +1526,7 @@
             } catch (e) {}
         }
 
-        // Connect both cameras simultaneously with auto-scan for GigE and CP Plus default IP
+        // Connect both cameras simultaneously with auto-scan for GigE and Seq GigE default index
         async function resetCycle() {
             try {
                 const res = await fetch('/reset_cycle', { method: 'POST' });
@@ -1547,17 +1598,12 @@
                 }
             };
 
-            // ── STEP 1: Connect CP Plus (One-by-one) ──────────────────────────
-            setBtnState('1/2 Connecting CP Plus...');
-            const cpIpInput = document.getElementById('cp-ip');
-            if (cpIpInput && (!cpIpInput.value || !cpIpInput.value.trim())) {
-                cpIpInput.value = '192.10.66.160';
-            }
+            // ── STEP 1: Connect Seq GigE Camera (Zone Detection) ──────────────
+            setBtnState('1/2 Connecting Seq GigE...');
+            const seqRes = await connectSeqGigeAsync();
 
-            const cpRes = await connectCpPlusAsync();
-
-            // ── STEP 2: Scan & Select GigE Camera ────────────────────────────
-            setBtnState('2/2 Scanning & Connecting GigE...');
+            // ── STEP 2: Scan & Select Serial GigE Camera ───────────────────────
+            setBtnState('2/2 Scanning & Connecting Serial GigE...');
             const gigeMsgEl = document.getElementById('gige-message');
             if (gigeMsgEl) {
                 gigeMsgEl.textContent = 'Scanning for GigE camera...';
@@ -1602,17 +1648,17 @@
                 console.warn('GigE auto-scan warning:', err);
             }
 
-            // ── STEP 3: Connect GigE (One-by-one) ─────────────────────────────
+            // ── STEP 3: Connect Serial GigE (One-by-one) ──────────────────────
             const gigeRes = await connectGigeAsync();
 
-            // ── STEP 4: Final Feedback ───────────────────────────────────────
-            if (cpRes.ok && gigeRes.ok) {
+            // ── STEP 4: Final Feedback ─────────────────────────────────────────
+            if (seqRes.ok && gigeRes.ok) {
                 setBtnState('✓ Both Cameras Connected', false, '#10b981');
                 closeConfigSidebar();
             } else {
                 const fails = [];
-                if (!cpRes.ok) fails.push('CP Plus');
-                if (!gigeRes.ok) fails.push('GigE');
+                if (!seqRes.ok) fails.push('Seq GigE');
+                if (!gigeRes.ok) fails.push('Serial GigE');
                 setBtnState(`⚠ Failed: ${fails.join(' & ')}`, false, '#dc2626');
             }
 
@@ -1661,7 +1707,7 @@
             streamImg.style.opacity = '1';
         }
 
-        // Activate CP Plus feed visually
+        // Activate Seq Industrial Camera feed visually
         function activateCpStream() {
             const cpStream = document.getElementById('video-stream-cp');
             if (cpStream) {
@@ -1703,27 +1749,39 @@
                 .catch(err => { msgEl.textContent = 'Scan failed: ' + err; });
         }
 
-        async function connectCpPlusAsync() {
-            const msgEl   = document.getElementById('cp-message');
-            const btnCon  = document.getElementById('cp-connect-btn');
-            const btnDis  = document.getElementById('cp-disconnect-btn');
+        async function connectSeqGigeAsync() {
+            const msgEl  = document.getElementById('seq-gige-message');
+            const btnCon = document.getElementById('seq-gige-connect-btn');
+            const btnDis = document.getElementById('seq-gige-disconnect-btn');
             if (msgEl) {
-                msgEl.textContent  = 'Connecting CP Plus...';
-                msgEl.style.color  = 'inherit';
+                msgEl.textContent = 'Connecting Seq Camera...';
+                msgEl.style.color = '#0284c7';
             }
             if (btnCon) btnCon.disabled = true;
 
-            const ipVal = (document.getElementById('cp-ip').value || '').trim() || '192.10.66.160';
+            let camIndex = 1;
+            const sel = document.getElementById('seq-gige-camera-select');
+            if (sel && sel.value) {
+                try {
+                    const parsed = JSON.parse(sel.value);
+                    if (parsed && parsed.id !== undefined) camIndex = parsed.id;
+                } catch (e) {}
+            } else {
+                const idxEl = document.getElementById('seq-gige-index');
+                if (idxEl && idxEl.value) camIndex = parseInt(idxEl.value);
+            }
+
+            const expVal = document.getElementById('seq-gige-exposure').value;
             const payload = {
-                ip  : ipVal,
-                port: document.getElementById('cp-port').value || 554,
-                user: document.getElementById('cp-user').value || 'admin',
-                pwd : document.getElementById('cp-pwd').value || '',
-                path: document.getElementById('cp-path').value || '/video/live?channel=1&subtype=0'
+                index       : camIndex,
+                exposure    : expVal ? parseInt(expVal) : null,
+                gain        : parseFloat(document.getElementById('seq-gige-gain').value),
+                gamma       : parseFloat(document.getElementById('seq-gige-gamma').value),
+                trigger_mode: document.getElementById('seq-gige-trigger').value,
             };
 
             try {
-                const r = await fetch('/connect_camera', {
+                const r = await fetch('/connect_seq_gige', {
                     method : 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body   : JSON.stringify(payload)
@@ -1735,7 +1793,9 @@
                         msgEl.style.color = '#16a34a';
                     }
                     if (btnDis) btnDis.disabled = false;
-                    activateCpStream();
+                    const saveBtn = document.getElementById('seq-gige-save-btn');
+                    if (saveBtn) saveBtn.disabled = false;
+                    activateCpStream();  // refresh the seq feed (uses /video_feed_cp endpoint)
                     closeConfigSidebar();
                     return { ok: true, message: data.message };
                 } else {
@@ -1756,36 +1816,107 @@
             }
         }
 
-        function connectCpPlus() {
-            return connectCpPlusAsync();
+        function connectSeqGige() {
+            return connectSeqGigeAsync();
         }
 
-        function disconnectCpPlus() {
-            const msgEl  = document.getElementById('cp-message');
-            const btnCon = document.getElementById('cp-connect-btn');
-            const btnDis = document.getElementById('cp-disconnect-btn');
-            msgEl.textContent = 'Disconnecting...';
-            msgEl.style.color = '#dc2626';
+        function disconnectSeqGige() {
+            const msgEl  = document.getElementById('seq-gige-message');
+            const btnCon = document.getElementById('seq-gige-connect-btn');
+            const btnDis = document.getElementById('seq-gige-disconnect-btn');
+            if (msgEl) { msgEl.textContent = 'Disconnecting...'; msgEl.style.color = '#dc2626'; }
 
-            fetch('/disconnect_camera', { method: 'POST' })
+            fetch('/disconnect_seq_gige', { method: 'POST' })
             .then(r => r.json())
             .then(data => {
                 if (data.status === 'success') {
-                    msgEl.textContent = '✓ ' + data.message;
-                    msgEl.style.color = '#16a34a';
-                    btnCon.disabled   = false;
-                    btnDis.disabled   = true;
-                    // Replace CP feed with placeholder by reloading
+                    if (msgEl) { msgEl.textContent = '✓ ' + data.message; msgEl.style.color = '#16a34a'; }
+                    if (btnCon) btnCon.disabled = false;
+                    if (btnDis) btnDis.disabled = true;
+                    const saveBtn = document.getElementById('seq-gige-save-btn');
+                    if (saveBtn) saveBtn.disabled = true;
                     const cpStream = document.getElementById('video-stream-cp');
-                    cpStream.src = '/video_feed_cp?' + new Date().getTime();
+                    if (cpStream) cpStream.src = '/video_feed_cp?' + Date.now();
                 } else {
-                    msgEl.textContent = '✗ ' + data.message;
-                    msgEl.style.color = '#dc2626';
+                    if (msgEl) { msgEl.textContent = '✗ ' + data.message; msgEl.style.color = '#dc2626'; }
                 }
             })
             .catch(err => {
-                msgEl.textContent = 'Disconnect error: ' + err;
-                msgEl.style.color = '#dc2626';
+                if (msgEl) { msgEl.textContent = 'Disconnect error: ' + err; msgEl.style.color = '#dc2626'; }
+            });
+        }
+
+        function scanSeqCameras() {
+            const msgEl = document.getElementById('seq-gige-message');
+            if (msgEl) { msgEl.textContent = 'Scanning...'; msgEl.style.color = '#0284c7'; }
+            fetch('/scan_seq_cameras')
+                .then(r => r.json())
+                .then(data => {
+                    const sel = document.getElementById('seq-gige-camera-select');
+                    if (sel) sel.innerHTML = '<option value="">— select a camera —</option>';
+                    if (data.cameras && data.cameras.length > 0) {
+                        data.cameras.forEach(cam => {
+                            const opt = document.createElement('option');
+                            opt.value = JSON.stringify(cam);
+                            opt.textContent = `${cam.model} | ${cam.display_name || ''} | Idx:${cam.id}`;
+                            if (sel) sel.appendChild(opt);
+                        });
+                        if (msgEl) msgEl.textContent = `Found ${data.cameras.length} camera(s).`;
+                    } else {
+                        if (msgEl) msgEl.textContent = 'No cameras found.';
+                    }
+                })
+                .catch(err => { if (msgEl) msgEl.textContent = 'Scan failed: ' + err; });
+        }
+
+        function onSeqGigeCameraSelected() {
+            const sel = document.getElementById('seq-gige-camera-select');
+            if (!sel || !sel.value) return;
+            try {
+                const cam = JSON.parse(sel.value);
+                if (cam && cam.id !== undefined) {
+                    document.getElementById('seq-gige-index').value = cam.id;
+                }
+                if (cam && cam.ip) {
+                    document.getElementById('seq-gige-ip').value = cam.ip;
+                }
+            } catch (e) {}
+        }
+
+        function updateSeqGigeFeatures() {
+            const btn = document.getElementById('seq-gige-save-btn');
+            const msgEl = document.getElementById('seq-gige-message');
+            const originalText = btn.textContent;
+            btn.textContent = 'Saving...';
+            btn.disabled = true;
+
+            const expVal = document.getElementById('seq-gige-exposure').value;
+            const payload = {
+                exposure    : expVal ? parseInt(expVal) : null,
+                gain        : parseFloat(document.getElementById('seq-gige-gain').value),
+                gamma       : parseFloat(document.getElementById('seq-gige-gamma').value),
+                trigger_mode: document.getElementById('seq-gige-trigger').value
+            };
+
+            fetch('/update_seq_gige_features', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                if (data.status === 'success') {
+                    if (msgEl) { msgEl.innerHTML = `✓ ${data.message}`; msgEl.style.color = '#16a34a'; }
+                } else {
+                    if (msgEl) { msgEl.innerHTML = `✗ ${data.message}`; msgEl.style.color = '#dc2626'; }
+                }
+            })
+            .catch(err => {
+                btn.textContent = originalText;
+                btn.disabled = false;
+                if (msgEl) msgEl.textContent = 'Error updating settings.';
             });
         }
 
@@ -1927,11 +2058,8 @@
             });
         }
 
-        // Poll /camera_status every second and update status card
+        // Poll /camera_status every second and update serial GigE status card
         function pollCameraStatus() {
-            const videoFeed = document.getElementById('video-stream');
-            const msgEl = document.getElementById('gige-message');
-            
             fetch('/camera_status')
             .then(r => r.json())
             .then(s => {
@@ -1955,6 +2083,35 @@
                 }
             })
             .catch(() => {});
+
+            // Also poll Seq camera status
+            fetch('/seq_camera_status')
+            .then(r => r.json())
+            .then(s => {
+                const modelEl  = document.getElementById('seq-gige-model-name');
+                const fpsEl    = document.getElementById('seq-gige-fps');
+                const resEl    = document.getElementById('seq-gige-resolution');
+                const connEl   = document.getElementById('seq-gige-conn-status');
+                if (modelEl) modelEl.textContent = s.model      || 'IKap GigE (Zone)';
+                if (fpsEl)   fpsEl.textContent   = s.fps        ? s.fps + ' fps' : '—';
+                if (resEl)   resEl.textContent    = s.resolution || '—';
+                if (connEl) {
+                    if (s.connected) {
+                        connEl.textContent = 'Connected';
+                        connEl.style.color = '#16a34a';
+                        const btn = document.getElementById('seq-gige-connect-btn');
+                        if (btn && !btn.disabled) {
+                            btn.disabled = true;
+                            document.getElementById('seq-gige-disconnect-btn').disabled = false;
+                            document.getElementById('seq-gige-save-btn').disabled = false;
+                        }
+                    } else {
+                        connEl.textContent = s.status || 'Disconnected';
+                        connEl.style.color = '#dc2626';
+                    }
+                }
+            })
+            .catch(() => {});
         }
         setInterval(pollCameraStatus, 1000);
 
@@ -1973,7 +2130,7 @@
                 const formData = new FormData();
                 formData.append('video', files[0]);
                 
-                const route = type === 'ind' ? '/upload_ind_video' : '/upload_video';
+                const route = type === 'ind' ? '/upload_ind_video' : '/upload_seq_video';
                 
                 fetch(route, {
                     method: 'POST',
@@ -1987,11 +2144,15 @@
                         } else {
                             activateCpStream();
                         }
+                        closeConfigSidebar();
                     } else {
-                        alert('Failed to process video upload');
+                        alert('Failed to process video upload: ' + (data.message || ''));
                     }
                 })
-                .catch(err => console.error('Error uploading video:', err));
+                .catch(err => {
+                    console.error('Error uploading video:', err);
+                    alert('Error uploading video: ' + err);
+                });
             }
         }
 
@@ -2015,7 +2176,7 @@
                 
                 // If stream is not active visually, but server is active/processing, auto-activate it
                 const streamImg = document.getElementById('video-stream');
-                const isStandby = streamImg.style.display === 'none' || !streamImg.src;
+                const isStandby = streamImg && (streamImg.style.display === 'none' || !streamImg.src);
                 const hasConnectedStream = data.status && 
                                            !data.status.includes("Awaiting camera connection") && 
                                            !data.status.includes("Awaiting Camera") &&
@@ -2023,6 +2184,13 @@
                 if (isStandby && hasConnectedStream) {
                     console.log("Active backend stream detected. Auto-activating video feed.");
                     activateStream();
+                }
+
+                // Also auto-activate Seq feed if backend is streaming
+                const cpStreamImg = document.getElementById('video-stream-cp');
+                const isCpStandby = cpStreamImg && (cpStreamImg.style.display === 'none' || !cpStreamImg.src);
+                if (isCpStandby && hasConnectedStream) {
+                    activateCpStream();
                 }
                 document.getElementById('cycle-badge').textContent = 'CYCLE ' + data.cycle_number;
                 

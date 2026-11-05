@@ -4,6 +4,10 @@ confidence_thresholds:
   seq_innerzone2: 0.60
   seq_outerzone1: 0.60
   seq_outerzone2: 0.60
+  inner_zone1: 0.60
+  inner_zone_2: 0.60
+  outerzone_1: 0.60
+  outer_zone_2: 0.60
 
 timings:
   capture_delay_inner1: 1.0
@@ -21,7 +25,13 @@ timings:
 
 camera:
   industrial:
+    # Serial-number detection camera (I-TEK IKapC GigE, index 0)
     exposure: 9600
+  seq:
+    # Zone-sequence detection camera (I-TEK IKapC GigE, index 1)
+    exposure: 9600
+    gain: 2
+    gamma: 1.0
 
 banners:
   waiting: "WAITING FOR {zone_name}"
